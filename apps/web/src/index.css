@@ -1637,6 +1637,12 @@ code {
   -webkit-app-region: no-drag;
 }
 
+/* A hover-peeked sidebar must keep receiving pointer events to stay open, and
+   Electron swallows them over drag regions. */
+[data-peeking="true"] .drag-region {
+  -webkit-app-region: no-drag;
+}
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
   width: var(--app-scrollbar-width);

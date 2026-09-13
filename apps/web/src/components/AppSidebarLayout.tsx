@@ -71,8 +71,10 @@ function readInitialThreadSidebarWidth(): number {
 
 function SidebarControl() {
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
-  const { toggleSidebar } = useSidebar();
-  const isSidebarVisible = useSidebarVisibility();
+  const { toggleSidebar, peeking, peekHandlers } = useSidebar();
+  const isSidebarOpen = useSidebarVisibility();
+  // A peeked sidebar sits under the trigger too, so it takes the same styling.
+  const isSidebarVisible = isSidebarOpen || peeking;
   const environmentIdentificationMode = useEnvironmentIdentificationMode();
   const stageBackdropVariant = useSidebarStageBackdropVariant(
     environmentIdentificationMode === "artwork",
@@ -112,6 +114,9 @@ function SidebarControl() {
         <TooltipTrigger
           render={
             <SidebarTrigger
+              // Hovering the trigger while collapsed previews the sidebar as an overlay.
+              onPointerEnter={isSidebarOpen ? undefined : peekHandlers.onPointerEnter}
+              onPointerLeave={peekHandlers.onPointerLeave}
               className={cn(
                 "pointer-events-auto",
                 isSidebarVisible &&

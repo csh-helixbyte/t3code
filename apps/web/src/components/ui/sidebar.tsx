@@ -29,6 +29,11 @@ const SIDEBAR_WIDTH = "16rem";
 const SIDEBAR_WIDTH_MOBILE = "calc(100vw - var(--spacing(3)))";
 const SIDEBAR_WIDTH_ICON = "3rem";
 const SIDEBAR_RESIZE_DEFAULT_MIN_WIDTH = 16 * 16;
+// Grace period before a peeked sidebar hides, so crossing the small gap between
+// the trigger and the panel does not dismiss it.
+const SIDEBAR_PEEK_CLOSE_DELAY_MS = 150;
+const SIDEBAR_PEEK_ENTER_EASING = "cubic-bezier(0.32, 0.72, 0, 1)";
+const SIDEBAR_PEEK_EXIT_EASING = "cubic-bezier(0.4, 0, 1, 1)";
 
 type SidebarContextProps = {
   state: ResponsiveSidebarState;
@@ -38,6 +43,12 @@ type SidebarContextProps = {
   setOpenMobile: (open: boolean) => void;
   isMobile: boolean;
   toggleSidebar: () => void;
+  /** True while a collapsed desktop sidebar is shown as a hover overlay. */
+  peeking: boolean;
+  peekHandlers: {
+    onPointerEnter: (event: React.PointerEvent<HTMLElement>) => void;
+    onPointerLeave: (event: React.PointerEvent<HTMLElement>) => void;
+  };
 };
 
 type SidebarResizableOptions = {
@@ -112,9 +123,22 @@ function SidebarProvider({
   // We use openProp and setOpenProp for control from outside the component.
   const [_open, _setOpen] = React.useState(defaultOpen);
   const open = openProp ?? _open;
+  const [peekRequested, setPeekRequested] = React.useState(false);
+  const peekCloseTimerRef = React.useRef<number | null>(null);
+  const clearPeekCloseTimer = React.useCallback(() => {
+    if (peekCloseTimerRef.current === null) return;
+    window.clearTimeout(peekCloseTimerRef.current);
+    peekCloseTimerRef.current = null;
+  }, []);
+  React.useEffect(() => clearPeekCloseTimer, [clearPeekCloseTimer]);
+  const peeking = peekRequested && !open && !isMobile;
   const setOpen = React.useCallback(
     async (value: boolean | ((value: boolean) => boolean)) => {
       const openState = typeof value === "function" ? value(open) : value;
+      // Pinning or collapsing ends any hover peek, so collapsing with the
+      // pointer still on the trigger does not immediately reopen the overlay.
+      clearPeekCloseTimer();
+      setPeekRequested(false);
       if (setOpenProp) {
         setOpenProp(openState);
       } else {
@@ -129,7 +153,29 @@ function SidebarProvider({
         value: String(openState),
       });
     },
-    [setOpenProp, open],
+    [setOpenProp, open, clearPeekCloseTimer],
+  );
+
+  // Attach to every element that should keep a collapsed sidebar peeked (the
+  // titlebar trigger and the sidebar panel). React pointer events follow the
+  // component tree, so menus portaled out of the sidebar keep it open.
+  const peekHandlers = React.useMemo<SidebarContextProps["peekHandlers"]>(
+    () => ({
+      onPointerEnter: (event) => {
+        if (event.pointerType !== "mouse") return;
+        clearPeekCloseTimer();
+        setPeekRequested(true);
+      },
+      onPointerLeave: (event) => {
+        if (event.pointerType !== "mouse") return;
+        clearPeekCloseTimer();
+        peekCloseTimerRef.current = window.setTimeout(() => {
+          peekCloseTimerRef.current = null;
+          setPeekRequested(false);
+        }, SIDEBAR_PEEK_CLOSE_DELAY_MS);
+      },
+    }),
+    [clearPeekCloseTimer],
   );
 
   // Helper to toggle the sidebar.
@@ -146,12 +192,14 @@ function SidebarProvider({
       isMobile,
       open,
       openMobile,
+      peekHandlers,
+      peeking,
       setOpen,
       setOpenMobile,
       state,
       toggleSidebar,
     }),
-    [state, open, setOpen, isMobile, openMobile, toggleSidebar],
+    [state, open, setOpen, isMobile, openMobile, toggleSidebar, peeking, peekHandlers],
   );
 
   return (
@@ -192,7 +240,7 @@ function Sidebar({
   collapsible?: "offcanvas" | "icon" | "none";
   resizable?: boolean | SidebarResizableOptions;
 }) {
-  const { isMobile, state, openMobile, setOpenMobile } = useSidebar();
+  const { isMobile, state, openMobile, setOpenMobile, peeking, peekHandlers } = useSidebar();
   const resolvedResizable = React.useMemo<SidebarResolvedResizableOptions | null>(() => {
     if (isMobile || collapsible === "none" || !resizable) {
       return null;
@@ -211,6 +259,21 @@ function Sidebar({
     () => ({ side, resizable: resolvedResizable }),
     [resolvedResizable, side],
   );
+  const containerRef = React.useRef<HTMLDivElement | null>(null);
+  const peekAnimationRef = React.useRef<Animation | null>(null);
+  const wasPeekingRef = React.useRef(peeking);
+  // Layout effect: the animation must start before the first frame that shows
+  // (or hides) the peeked panel, otherwise it flashes at full opacity.
+  React.useLayoutEffect(() => {
+    const wasPeeking = wasPeekingRef.current;
+    wasPeekingRef.current = peeking;
+    const container = containerRef.current;
+    if (!container) return;
+    const pinned = state === "expanded";
+    // Pinning mid-exit must also stop the exit, which holds the panel offset.
+    if (wasPeeking === peeking && !(pinned && peekAnimationRef.current)) return;
+    animateSidebarPeek(container, peekAnimationRef, { peeking, pinned, side });
+  }, [peeking, side, state]);
 
   if (collapsible === "none") {
     return (
@@ -292,18 +355,31 @@ function Sidebar({
         />
         <div
           className={cn(
-            "fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) md:flex",
+            "fixed inset-y-0 hidden h-svh w-(--sidebar-width) md:flex",
             "[[data-panel-animations=true]_&]:transition-[left,right,width] [[data-panel-animations=true]_&]:[transition-duration:var(--panel-animation-duration)] [[data-panel-animations=true]_&]:ease-out",
             side === "left"
               ? "left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)]"
               : "right-0 group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)]",
+            // A peeked sidebar floats over the content; the gap stays collapsed
+            // so the main column never shifts. It is moved on screen with
+            // `translate`, which is not transitioned, so it appears in place
+            // and the peek animation owns the motion. `data-peek-closing` holds
+            // it there while the exit animation plays.
+            "z-10 data-peeking:z-40 data-peeking:shadow-xl data-peek-closing:z-40 data-peek-closing:shadow-xl",
+            side === "left"
+              ? "data-peeking:translate-x-(--sidebar-width) data-peek-closing:translate-x-(--sidebar-width)"
+              : "data-peeking:-translate-x-(--sidebar-width) data-peek-closing:-translate-x-(--sidebar-width)",
             // Adjust the padding for floating and inset variants.
             variant === "floating" || variant === "inset"
               ? "p-2 group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)+(--spacing(4))+2px)]"
               : "group-data-[collapsible=icon]:w-(--sidebar-width-icon) group-data-[side=left]:border-r group-data-[side=right]:border-l",
             className,
           )}
+          data-peeking={peeking ? "true" : undefined}
           data-slot="sidebar-container"
+          ref={containerRef}
+          onPointerEnter={state === "collapsed" ? peekHandlers.onPointerEnter : undefined}
+          onPointerLeave={peekHandlers.onPointerLeave}
           {...props}
         >
           <div
@@ -317,6 +393,68 @@ function Sidebar({
       </div>
     </SidebarInstanceContext>
   );
+}
+
+function animateSidebarPeek(
+  container: HTMLElement,
+  animationRef: React.RefObject<Animation | null>,
+  { peeking, pinned, side }: { peeking: boolean; pinned: boolean; side: "left" | "right" },
+) {
+  const running = animationRef.current;
+  if (pinned) {
+    running?.cancel();
+    animationRef.current = null;
+    delete container.dataset.peekClosing;
+    // The panel is already on screen; skip the offcanvas slide-in that the
+    // open transition would otherwise replay from off screen. This must run
+    // before anything else forces a style recalc.
+    container.style.setProperty("transition-duration", "0ms");
+    void container.offsetWidth;
+    container.style.removeProperty("transition-duration");
+    return;
+  }
+
+  // Start from wherever an interrupted animation left off, so re-hovering
+  // during the exit reverses smoothly instead of blinking.
+  const interruptedFrame = running
+    ? (({ opacity, transform }) => ({ opacity, transform }))(getComputedStyle(container))
+    : null;
+  const hiddenFrame = {
+    opacity: 0,
+    transform: `translateX(${side === "left" ? "-100%" : "100%"})`,
+  };
+  const shownFrame = { opacity: 1, transform: "none" };
+  running?.cancel();
+  animationRef.current = null;
+  delete container.dataset.peekClosing;
+  // Follow the panel animation setting: its duration, and staying still when
+  // it is off, reduced motion is requested, or a navigation suppresses motion.
+  const duration = Number.parseFloat(
+    getComputedStyle(container).getPropertyValue("--panel-animation-duration"),
+  );
+  if (!container.closest('[data-panel-animations="true"]') || !(duration > 0)) return;
+
+  if (peeking) {
+    animationRef.current = container.animate([interruptedFrame ?? hiddenFrame, shownFrame], {
+      duration,
+      easing: SIDEBAR_PEEK_ENTER_EASING,
+    });
+    return;
+  }
+
+  container.dataset.peekClosing = "true";
+  const animation = container.animate([interruptedFrame ?? shownFrame, hiddenFrame], {
+    duration,
+    easing: SIDEBAR_PEEK_EXIT_EASING,
+  });
+  animationRef.current = animation;
+  const finish = () => {
+    if (animationRef.current !== animation) return;
+    animationRef.current = null;
+    delete container.dataset.peekClosing;
+  };
+  animation.addEventListener("finish", finish);
+  animation.addEventListener("cancel", finish);
 }
 
 function SidebarTrigger({ className, onClick, ...props }: React.ComponentProps<typeof Button>) {
