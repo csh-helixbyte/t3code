@@ -59,7 +59,12 @@ import {
 export type ComposerDraftContextRecord =
   | { kind: "terminal"; record: TerminalContextDraft }
   | { kind: "review-comment"; record: ReviewCommentContext }
-  | { kind: "preview-annotation"; record: PreviewAnnotationPayload }
+  | {
+      kind: "preview-annotation";
+      record: PreviewAnnotationPayload;
+      /** The draft keeps the crop as an image attachment sharing the annotation's id. */
+      screenshot?: ComposerImageAttachment | undefined;
+    }
   | { kind: "image"; record: ComposerImageAttachment; upload?: AttachmentUploadState | undefined }
   | { kind: "file"; record: ComposerFileAttachment; upload?: AttachmentUploadState | undefined };
 
@@ -123,7 +128,11 @@ export function composerContextRecordsFromDraft(input: {
     records.set(reviewCommentContextId(record.id), { kind: "review-comment", record });
   }
   for (const record of input.previewAnnotations ?? []) {
-    records.set(previewAnnotationContextId(record.id), { kind: "preview-annotation", record });
+    records.set(previewAnnotationContextId(record.id), {
+      kind: "preview-annotation",
+      record,
+      screenshot: input.images?.find((image) => image.id === record.id),
+    });
   }
   return records;
 }
@@ -291,15 +300,17 @@ function ComposerReviewCommentDetails({ comment }: { comment: ReviewCommentConte
 
 function ComposerPreviewAnnotationDetails({
   annotation,
+  screenshotUrl,
 }: {
   annotation: PreviewAnnotationPayload;
+  screenshotUrl: string | undefined;
 }) {
   const summary = previewAnnotationTooltip(annotation);
   return (
     <div className="overflow-hidden rounded-lg border border-border/70 bg-background/70">
-      {annotation.screenshot?.dataUrl ? (
+      {screenshotUrl ? (
         <img
-          src={annotation.screenshot.dataUrl}
+          src={screenshotUrl}
           alt="Annotated preview crop"
           className="max-h-64 w-full border-border/70 border-b bg-muted object-contain"
         />
@@ -439,7 +450,12 @@ const composerContextPresentationRegistry = createContextPresentationRegistry<
             }
             label={previewAnnotationContextLabel(entry.record)}
             kindLabel="Preview annotation"
-            details={<ComposerPreviewAnnotationDetails annotation={entry.record} />}
+            details={
+              <ComposerPreviewAnnotationDetails
+                annotation={entry.record}
+                screenshotUrl={entry.screenshot?.previewUrl || entry.record.screenshot?.dataUrl}
+              />
+            }
             detailsMode={definition.capabilities.details}
             toneClassName={CONTEXT_INLINE_CHIP_TONE_CLASS_NAMES["preview-annotation"]}
           />
