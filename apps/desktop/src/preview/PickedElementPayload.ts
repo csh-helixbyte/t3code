@@ -125,6 +125,25 @@ export function isPreviewAnnotationPayload(value: unknown): value is PreviewAnno
     return false;
   }
 
+  const texts = annotation["texts"];
+  if (texts !== undefined) {
+    if (!Array.isArray(texts)) return false;
+    if (
+      !texts.every((entry) => {
+        if (typeof entry !== "object" || entry === null) return false;
+        const target = entry as Record<string, unknown>;
+        return (
+          typeof target["id"] === "string" &&
+          typeof target["text"] === "string" &&
+          typeof target["color"] === "string" &&
+          isRect(target["rect"])
+        );
+      })
+    ) {
+      return false;
+    }
+  }
+
   const styleChanges = annotation["styleChanges"];
   if (!Array.isArray(styleChanges)) return false;
   if (

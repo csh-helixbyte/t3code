@@ -169,6 +169,8 @@ export const PreviewAnnotationContextRecord = Schema.Struct({
       so a pasted annotation still says what it marked. */
   regionCount: Schema.optional(NonNegativeInt),
   strokeCount: Schema.optional(NonNegativeInt),
+  /** Text notes typed onto the page, in placement order. */
+  textNotes: Schema.optional(Schema.Array(ShortString).check(Schema.isMaxLength(50))),
   styleChangeDetails: Schema.optional(
     Schema.Array(
       Schema.Struct({

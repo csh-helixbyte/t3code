@@ -1019,6 +1019,21 @@ export const PreviewAnnotationStrokeTargetSchema: Schema.Codec<PreviewAnnotation
     bounds: PreviewAnnotationRectSchema,
   });
 
+export interface PreviewAnnotationTextTarget {
+  id: string;
+  text: string;
+  color: string;
+  rect: PreviewAnnotationRect;
+}
+
+export const PreviewAnnotationTextTargetSchema: Schema.Codec<PreviewAnnotationTextTarget> =
+  Schema.Struct({
+    id: Schema.String,
+    text: Schema.String,
+    color: Schema.String,
+    rect: PreviewAnnotationRectSchema,
+  });
+
 export interface PreviewAnnotationStyleChange {
   targetId: string;
   selector: string | null;
@@ -1053,7 +1068,7 @@ export const PreviewAnnotationScreenshotSchema: Schema.Codec<PreviewAnnotationSc
 
 /**
  * A submitted preview annotation. One annotation may reference multiple DOM
- * elements, freeform regions, and ink strokes. The desktop main process adds
+ * elements, regions, drawn boxes, and text notes. The desktop main process adds
  * the screenshot after the guest preload submits the structured draft.
  */
 export interface PreviewAnnotationPayload {
@@ -1064,6 +1079,8 @@ export interface PreviewAnnotationPayload {
   elements: ReadonlyArray<PreviewAnnotationElementTarget>;
   regions: ReadonlyArray<PreviewAnnotationRegionTarget>;
   strokes: ReadonlyArray<PreviewAnnotationStrokeTarget>;
+  /** Optional so annotations saved before text notes existed still decode. */
+  texts?: ReadonlyArray<PreviewAnnotationTextTarget>;
   styleChanges: ReadonlyArray<PreviewAnnotationStyleChange>;
   screenshot: PreviewAnnotationScreenshot | null;
   createdAt: string;
@@ -1078,6 +1095,7 @@ export const PreviewAnnotationPayloadSchema: Schema.Codec<PreviewAnnotationPaylo
     elements: Schema.Array(PreviewAnnotationElementTargetSchema),
     regions: Schema.Array(PreviewAnnotationRegionTargetSchema),
     strokes: Schema.Array(PreviewAnnotationStrokeTargetSchema),
+    texts: Schema.optionalKey(Schema.Array(PreviewAnnotationTextTargetSchema)),
     styleChanges: Schema.Array(PreviewAnnotationStyleChangeSchema),
     screenshot: Schema.NullOr(PreviewAnnotationScreenshotSchema),
     createdAt: Schema.String,

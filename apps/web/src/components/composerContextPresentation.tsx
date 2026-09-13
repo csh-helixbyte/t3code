@@ -272,6 +272,8 @@ function previewAnnotationTooltip(annotation: PreviewAnnotationPayload): string 
   if (annotation.elements.length > 0) targets.push(plural(annotation.elements.length, "element"));
   if (annotation.regions.length > 0) targets.push(plural(annotation.regions.length, "region"));
   if (annotation.strokes.length > 0) targets.push(plural(annotation.strokes.length, "drawing"));
+  const textCount = annotation.texts?.length ?? 0;
+  if (textCount > 0) targets.push(plural(textCount, "text note"));
   if (annotation.styleChanges.length > 0) {
     targets.push(plural(annotation.styleChanges.length, "style change"));
   }

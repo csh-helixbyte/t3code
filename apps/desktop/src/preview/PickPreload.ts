@@ -12,6 +12,7 @@ import type {
   PreviewAnnotationStrokeTarget,
   PreviewAnnotationStyleChange,
   PreviewAnnotationSubmission,
+  PreviewAnnotationTextTarget,
 } from "@t3tools/contracts";
 
 import { resolveAnnotationSubmission } from "./AnnotationKeyboard.ts";
@@ -34,8 +35,9 @@ const MAX_MARQUEE_ELEMENTS = 20;
 const ELEMENT_CONTEXT_TIMEOUT_MS = 5_000;
 const CONTENT_LAYER_Z_INDEX = 1;
 const CHROME_LAYER_Z_INDEX = 10;
+const BOX_STROKE_WIDTH = 3;
 
-type AnnotationTool = "select" | "marquee" | "draw" | "erase";
+type AnnotationTool = "select" | "marquee" | "box" | "text" | "erase";
 
 interface SelectedElement {
   id: string;
@@ -403,18 +405,24 @@ function createUnitInput(unit: string, placeholder = "0"): HTMLInputElement {
   return input;
 }
 
-function pathFromPoints(points: ReadonlyArray<PreviewAnnotationPoint>): string {
-  if (points.length === 0) return "";
-  if (points.length === 1) return `M ${points[0]!.x} ${points[0]!.y} l 0.01 0.01`;
-  let path = `M ${points[0]!.x} ${points[0]!.y}`;
-  for (let index = 1; index < points.length - 1; index += 1) {
-    const current = points[index]!;
-    const next = points[index + 1]!;
-    path += ` Q ${current.x} ${current.y} ${(current.x + next.x) / 2} ${(current.y + next.y) / 2}`;
-  }
-  const last = points[points.length - 1]!;
-  path += ` L ${last.x} ${last.y}`;
-  return path;
+function positionSvgRect(node: SVGRectElement, rect: PreviewAnnotationRect): void {
+  node.setAttribute("x", String(rect.x));
+  node.setAttribute("y", String(rect.y));
+  node.setAttribute("width", String(rect.width));
+  node.setAttribute("height", String(rect.height));
+}
+
+/** Boxes travel as closed strokes through their corners, so the wire shape stays unchanged. */
+function rectCorners(rect: PreviewAnnotationRect): PreviewAnnotationPoint[] {
+  const right = rect.x + rect.width;
+  const bottom = rect.y + rect.height;
+  return [
+    { x: rect.x, y: rect.y },
+    { x: right, y: rect.y },
+    { x: right, y: bottom },
+    { x: rect.x, y: bottom },
+    { x: rect.x, y: rect.y },
+  ];
 }
 
 function strokeBounds(
@@ -521,11 +529,13 @@ function startAnnotation(): void {
   const selected = new Map<Element, SelectedElement>();
   const regions: PreviewAnnotationRegionTarget[] = [];
   const strokes: PreviewAnnotationStrokeTarget[] = [];
+  const texts: PreviewAnnotationTextTarget[] = [];
   const styleChanges = new Map<string, PreviewAnnotationStyleChange>();
   const toolButtons = new Map<AnnotationTool, HTMLButtonElement>();
   let tool: AnnotationTool = "select";
   let dragStart: PreviewAnnotationPoint | null = null;
-  let activeStroke: { target: PreviewAnnotationStrokeTarget; path: SVGPathElement } | null = null;
+  let activeBox: SVGRectElement | null = null;
+  let textDraft: HTMLInputElement | null = null;
   let pendingCapture = false;
   let editorExpanded = false;
   let editorWasShown = false;
@@ -544,7 +554,8 @@ function startAnnotation(): void {
   comment.addEventListener("input", resizeComment);
 
   const updateStatus = (): void => {
-    const hasTargets = selected.size > 0 || regions.length > 0 || strokes.length > 0;
+    const hasTargets =
+      selected.size > 0 || regions.length > 0 || strokes.length > 0 || texts.length > 0;
     editor.style.display = hasTargets ? "flex" : "none";
     submit.disabled = !hasTargets;
     submit.style.opacity = hasTargets ? "1" : "0.45";
@@ -865,7 +876,8 @@ function startAnnotation(): void {
   const tools: ReadonlyArray<[AnnotationTool, string, string]> = [
     ["select", "Select", "Select elements (V)"],
     ["marquee", "Region", "Draw a region or marquee-select elements (R)"],
-    ["draw", "Draw", "Draw freehand (D)"],
+    ["box", "Box", "Draw a box (B)"],
+    ["text", "Text", "Place a text note (T)"],
     ["erase", "Erase", "Remove an annotation target (E)"],
   ];
   for (const [candidate, label, title] of tools) {
@@ -911,6 +923,7 @@ function startAnnotation(): void {
         ),
         ...regions.map((region) => region.rect),
         ...strokes.map((stroke) => stroke.bounds),
+        ...texts.map((note) => note.rect),
       ],
       0,
     );
@@ -1021,6 +1034,19 @@ function startAnnotation(): void {
   };
 
   const removeTargetAtPoint = (x: number, y: number): boolean => {
+    const textIndex = texts.findLastIndex(
+      (note) =>
+        x >= note.rect.x &&
+        x <= note.rect.x + note.rect.width &&
+        y >= note.rect.y &&
+        y <= note.rect.y + note.rect.height,
+    );
+    if (textIndex >= 0) {
+      const [removed] = texts.splice(textIndex, 1);
+      root.querySelector(`[data-text-id="${removed?.id}"]`)?.remove();
+      updateStatus();
+      return true;
+    }
     for (const target of Array.from(selected.values()).toReversed()) {
       const rect = target.element.getBoundingClientRect();
       if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
@@ -1115,23 +1141,98 @@ function startAnnotation(): void {
       );
       return;
     }
-    if (tool === "draw" && activeStroke) {
-      activeStroke.target.points = [
-        ...activeStroke.target.points,
-        { x: event.clientX, y: event.clientY },
-      ];
-      activeStroke.target.bounds = strokeBounds(
-        activeStroke.target.points,
-        activeStroke.target.width,
+    if (tool === "box" && dragStart && activeBox) {
+      positionSvgRect(
+        activeBox,
+        normalizeRect(dragStart.x, dragStart.y, event.clientX, event.clientY),
       );
-      activeStroke.path.setAttribute("d", pathFromPoints(activeStroke.target.points));
     }
+  };
+
+  const cancelTextDraft = (): void => {
+    const input = textDraft;
+    textDraft = null;
+    input?.remove();
+  };
+
+  const commitTextDraft = (): void => {
+    const input = textDraft;
+    if (!input) return;
+    textDraft = null;
+    const text = input.value.trim();
+    const left = Number.parseFloat(input.dataset.x ?? "0");
+    const top = Number.parseFloat(input.dataset.y ?? "0");
+    input.remove();
+    if (!text) return;
+    const note: PreviewAnnotationTextTarget = {
+      id: nextId("text"),
+      text,
+      color: annotationTheme?.primary ?? "#2563eb",
+      rect: { x: left, y: top, width: 0, height: 0 },
+    };
+    const label = document.createElement("div");
+    label.setAttribute(OVERLAY_ATTRIBUTE, "");
+    label.setAttribute("data-text-id", note.id);
+    label.className =
+      "fixed rounded-md bg-primary px-2 py-1 font-sans text-sm font-medium text-primary-foreground shadow-md";
+    label.style.cssText = [
+      "position:fixed",
+      "left:0",
+      "top:0",
+      "pointer-events:none",
+      "white-space:pre-wrap",
+      "overflow-wrap:anywhere",
+      "max-width:320px",
+      `transform:translate(${left}px, ${top}px)`,
+      `z-index:${CONTENT_LAYER_Z_INDEX}`,
+    ].join(";");
+    label.textContent = text;
+    root.appendChild(label);
+    const bounds = label.getBoundingClientRect();
+    note.rect = { x: left, y: top, width: bounds.width, height: bounds.height };
+    texts.push(note);
+    updateStatus();
+  };
+
+  const openTextDraft = (x: number, y: number): void => {
+    const input = document.createElement("input");
+    input.type = "text";
+    input.placeholder = "Type a note…";
+    input.setAttribute(OVERLAY_ATTRIBUTE, "");
+    input.setAttribute("aria-label", "Text note");
+    input.dataset.x = String(x);
+    input.dataset.y = String(y);
+    input.className =
+      "pointer-events-auto fixed rounded-md border border-primary bg-background px-2 py-1 font-sans text-sm text-foreground shadow-md outline-none";
+    input.style.cssText = [
+      "position:fixed",
+      "left:0",
+      "top:0",
+      "field-sizing:content",
+      "min-width:140px",
+      "max-width:320px",
+      `transform:translate(${x}px, ${y}px)`,
+      `z-index:${CHROME_LAYER_Z_INDEX}`,
+    ].join(";");
+    input.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" || event.isComposing) return;
+      event.preventDefault();
+      commitTextDraft();
+    });
+    input.addEventListener("blur", commitTextDraft);
+    root.appendChild(input);
+    textDraft = input;
+    // Focus after the pointer sequence settles so the page click cannot steal it back.
+    window.setTimeout(() => {
+      if (textDraft === input) input.focus({ preventScroll: true });
+    }, 0);
   };
 
   const onPointerDown = (event: PointerEvent): void => {
     if (event.button !== 0 || isAnnotationNode(event.target as Element)) return;
     event.preventDefault();
     event.stopPropagation();
+    commitTextDraft();
     if (tool === "select") {
       const target = pickFromPoint(event.clientX, event.clientY);
       if (target) toggleSelected(target, event.shiftKey);
@@ -1141,25 +1242,20 @@ function startAnnotation(): void {
       removeTargetAtPoint(event.clientX, event.clientY);
       return;
     }
+    if (tool === "text") {
+      openTextDraft(event.clientX, event.clientY);
+      return;
+    }
     dragStart = { x: event.clientX, y: event.clientY };
-    if (tool === "draw") {
-      const stroke: PreviewAnnotationStrokeTarget = {
-        id: nextId("stroke"),
-        color: annotationTheme?.primary ?? "#2563eb",
-        width: 4,
-        points: [dragStart],
-        bounds: { x: dragStart.x, y: dragStart.y, width: 1, height: 1 },
-      };
-      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-      path.setAttribute(OVERLAY_ATTRIBUTE, "");
-      path.setAttribute("data-stroke-id", stroke.id);
-      path.setAttribute("fill", "none");
-      path.setAttribute("stroke", stroke.color);
-      path.setAttribute("stroke-width", String(stroke.width));
-      path.setAttribute("stroke-linecap", "round");
-      path.setAttribute("stroke-linejoin", "round");
-      svg.appendChild(path);
-      activeStroke = { target: stroke, path };
+    if (tool === "box") {
+      activeBox = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      activeBox.setAttribute(OVERLAY_ATTRIBUTE, "");
+      activeBox.setAttribute("fill", "none");
+      activeBox.setAttribute("stroke", annotationTheme?.primary ?? "#2563eb");
+      activeBox.setAttribute("stroke-width", String(BOX_STROKE_WIDTH));
+      activeBox.setAttribute("rx", "4");
+      positionSvgRect(activeBox, { x: dragStart.x, y: dragStart.y, width: 0, height: 0 });
+      svg.appendChild(activeBox);
     }
   };
 
@@ -1184,10 +1280,24 @@ function startAnnotation(): void {
           root.appendChild(regionBox);
         }
       }
-    } else if (tool === "draw" && activeStroke) {
-      if (activeStroke.target.points.length > 1) strokes.push(activeStroke.target);
-      else activeStroke.path.remove();
-      activeStroke = null;
+    } else if (tool === "box" && activeBox) {
+      const rect = normalizeRect(dragStart.x, dragStart.y, event.clientX, event.clientY);
+      if (isUsableRect(rect)) {
+        const points = rectCorners(rect);
+        const stroke: PreviewAnnotationStrokeTarget = {
+          id: nextId("stroke"),
+          color: activeBox.getAttribute("stroke") ?? "#2563eb",
+          width: BOX_STROKE_WIDTH,
+          points,
+          bounds: strokeBounds(points, BOX_STROKE_WIDTH),
+        };
+        positionSvgRect(activeBox, rect);
+        activeBox.setAttribute("data-stroke-id", stroke.id);
+        strokes.push(stroke);
+      } else {
+        activeBox.remove();
+      }
+      activeBox = null;
     }
     dragStart = null;
     updateStatus();
@@ -1249,6 +1359,12 @@ function startAnnotation(): void {
   const onCaptured = (): void => teardown(false);
   const onKeyDown = (event: KeyboardEvent): void => {
     if (isAnnotationNode(event.target as Element) && event.key !== "Escape") return;
+    if (event.key === "Escape" && textDraft) {
+      event.preventDefault();
+      event.stopPropagation();
+      cancelTextDraft();
+      return;
+    }
     if (event.key === "Escape") {
       event.preventDefault();
       event.stopPropagation();
@@ -1257,14 +1373,19 @@ function startAnnotation(): void {
     }
     if (event.key === "v") tool = "select";
     else if (event.key === "r") tool = "marquee";
-    else if (event.key === "d") tool = "draw";
+    else if (event.key === "b") tool = "box";
+    else if (event.key === "t") tool = "text";
     else if (event.key === "e") tool = "erase";
     else return;
     refreshToolButtons();
   };
 
   const submitAnnotation = (submission: PreviewAnnotationSubmission): void => {
-    if (pendingCapture || (selected.size === 0 && regions.length === 0 && strokes.length === 0))
+    commitTextDraft();
+    if (
+      pendingCapture ||
+      (selected.size === 0 && regions.length === 0 && strokes.length === 0 && texts.length === 0)
+    )
       return;
     pendingCapture = true;
     submit.disabled = true;
@@ -1275,6 +1396,7 @@ function startAnnotation(): void {
     const submittedComment = comment.value.trim();
     const submittedRegions = [...regions];
     const submittedStrokes = [...strokes];
+    const submittedTexts = [...texts];
     const submittedStyleChanges = Array.from(styleChanges.values(), (change) => ({ ...change }));
     void Promise.all(
       Array.from(selected.values()).map(async (target) => {
@@ -1303,6 +1425,7 @@ function startAnnotation(): void {
           elements,
           regions: submittedRegions,
           strokes: submittedStrokes,
+          texts: submittedTexts,
           styleChanges: submittedStyleChanges,
           screenshot: null,
           createdAt: new Date().toISOString(),
@@ -1314,6 +1437,7 @@ function startAnnotation(): void {
           ...elements.map((target) => target.rect),
           ...submittedRegions.map((region) => region.rect),
           ...submittedStrokes.map((stroke) => stroke.bounds),
+          ...submittedTexts.map((note) => note.rect),
         ]);
         ipcRenderer.send(ELEMENT_PICKED_CHANNEL, annotation, screenshotRect, submission);
       })

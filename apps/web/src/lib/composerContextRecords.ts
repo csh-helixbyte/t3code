@@ -197,6 +197,8 @@ function previewAnnotationTargetSummary(annotation: PreviewAnnotationPayload): s
     parts.push(plural(annotation.elements.length, "selected element"));
   if (annotation.regions.length > 0) parts.push(plural(annotation.regions.length, "marked region"));
   if (annotation.strokes.length > 0) parts.push(plural(annotation.strokes.length, "drawing"));
+  const textCount = annotation.texts?.length ?? 0;
+  if (textCount > 0) parts.push(plural(textCount, "text note"));
   return parts.join(", ");
 }
 
@@ -233,6 +235,9 @@ export function previewAnnotationContextRecord(
     styleChangeDetails: annotation.styleChanges.map((change) => ({ ...change })),
     ...(annotation.regions.length > 0 ? { regionCount: annotation.regions.length } : {}),
     ...(annotation.strokes.length > 0 ? { strokeCount: annotation.strokes.length } : {}),
+    ...(annotation.texts && annotation.texts.length > 0
+      ? { textNotes: annotation.texts.map((note) => note.text) }
+      : {}),
     ...(options?.screenshotContextId !== undefined
       ? { screenshotContextId: toKindScopedComposerContextId("image", options.screenshotContextId) }
       : {}),
@@ -455,6 +460,16 @@ export function previewAnnotationFromRecord(
       points: [],
       bounds: { x: 0, y: 0, width: 0, height: 0 },
     })),
+    ...(record.textNotes && record.textNotes.length > 0
+      ? {
+          texts: record.textNotes.map((text, index) => ({
+            id: `${record.contextId}-text-${index + 1}`,
+            text,
+            color: "",
+            rect: { x: 0, y: 0, width: 0, height: 0 },
+          })),
+        }
+      : {}),
     styleChanges:
       record.styleChangeDetails ??
       record.styleChanges.flatMap((change) => {

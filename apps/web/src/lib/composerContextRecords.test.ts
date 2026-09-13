@@ -448,6 +448,35 @@ describe("composerContextRecords", () => {
     expect(reencoded.screenshotContextId).toBe("image_ann_1");
   });
 
+  it("keeps text notes' wording across a round trip", () => {
+    const withNotes: PreviewAnnotationPayload = {
+      ...annotation,
+      elements: [],
+      styleChanges: [],
+      texts: [
+        {
+          id: "tx_1",
+          text: "Too much padding",
+          color: "#000",
+          rect: { x: 1, y: 2, width: 3, height: 4 },
+        },
+        {
+          id: "tx_2",
+          text: "Align left",
+          color: "#000",
+          rect: { x: 5, y: 6, width: 7, height: 8 },
+        },
+      ],
+    };
+    const record = previewAnnotationContextRecord(withNotes);
+    expect(record.targetSummary).toBe("2 text notes");
+    expect(record.textNotes).toEqual(["Too much padding", "Align left"]);
+    expect(() => decodeMessageContext({ version: 1, records: [record] })).not.toThrow();
+
+    const reencoded = previewAnnotationContextRecord(previewAnnotationFromRecord(record));
+    expect(reencoded.textNotes).toEqual(["Too much padding", "Align left"]);
+  });
+
   it("treats colliding ids with different payloads as distinct records", () => {
     const base = terminalContextRecord({
       id: "term-1",

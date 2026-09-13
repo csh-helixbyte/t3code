@@ -205,6 +205,9 @@ function formatComposerContextProviderPayload(record: KnownComposerContextRecord
       ];
       if (record.comment.trim()) lines.push(`comment: ${record.comment.trim()}`);
       if (record.targetSummary) lines.push(`targets: ${record.targetSummary}`);
+      if (record.textNotes && record.textNotes.length > 0) {
+        lines.push("text notes on page:", ...record.textNotes.map((note) => `- ${note}`));
+      }
       if (record.styleChanges.length > 0) {
         lines.push(
           "requested visual changes:",

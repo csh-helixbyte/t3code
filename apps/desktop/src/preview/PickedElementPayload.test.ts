@@ -197,5 +197,10 @@ describe("isPreviewAnnotationPayload", () => {
         validAnnotation({ elements: [{ id: "element_1", element: {}, rect: {} }] }),
       ),
     ).toBe(false);
+    expect(
+      isPreviewAnnotationPayload(
+        validAnnotation({ texts: [{ id: "text_1", text: 42, rect: {} }] }),
+      ),
+    ).toBe(false);
   });
 });
