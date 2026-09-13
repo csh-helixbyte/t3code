@@ -1,13 +1,22 @@
 import type { PreviewAnnotationPayload } from "@t3tools/contracts";
 
+/**
+ * Decodes the crop in memory. `fetch(dataUrl)` would be simpler, but the desktop
+ * renderer's CSP `connect-src` does not allow `data:`, so the fetch is refused
+ * and every desktop crop was dropped.
+ */
 async function previewAnnotationScreenshotFile(
   annotation: PreviewAnnotationPayload,
 ): Promise<File | null> {
   if (!annotation.screenshot) return null;
-  const response = await fetch(annotation.screenshot.dataUrl);
-  const blob = await response.blob();
-  return new File([blob], `preview-annotation-${annotation.id}.png`, {
-    type: blob.type || "image/png",
+  const match = /^data:([^;,]*)(;base64)?,(.*)$/s.exec(annotation.screenshot.dataUrl);
+  if (!match) throw new Error("Preview annotation screenshot is not a data URL");
+  const [, mimeType, base64, data = ""] = match;
+  const bytes = base64
+    ? Uint8Array.from(atob(data), (char) => char.charCodeAt(0))
+    : new TextEncoder().encode(decodeURIComponent(data));
+  return new File([bytes], `preview-annotation-${annotation.id}.png`, {
+    type: mimeType || "image/png",
   });
 }
 

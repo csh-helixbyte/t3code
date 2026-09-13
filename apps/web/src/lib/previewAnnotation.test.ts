@@ -46,10 +46,18 @@ describe("preview annotation capture", () => {
     vi.unstubAllGlobals();
   });
 
-  it("returns the crop when the fetch resolves", async () => {
-    vi.stubGlobal("fetch", async () => new Response(new Blob(["png"], { type: "image/png" })));
-    const capture = await capturePreviewAnnotationScreenshot(annotation);
+  it("decodes the crop without fetch, which the desktop CSP refuses for data URLs", async () => {
+    vi.stubGlobal("fetch", async () => {
+      throw new Error("Refused to connect: violates connect-src");
+    });
+    const capture = await capturePreviewAnnotationScreenshot({
+      ...annotation,
+      screenshot: { ...annotation.screenshot!, dataUrl: "data:image/png;base64,iVBORw==" },
+    });
     expect(capture.status).toBe("captured");
+    if (capture.status !== "captured") return;
+    expect(capture.file.type).toBe("image/png");
+    expect([...new Uint8Array(await capture.file.arrayBuffer())]).toEqual([137, 80, 78, 71]);
   });
 
   it("reports none when the annotation carries no crop", async () => {
@@ -57,18 +65,11 @@ describe("preview annotation capture", () => {
     expect(capture).toEqual({ status: "none" });
   });
 
-  it("fails instead of hanging when the crop never arrives", async () => {
-    vi.useFakeTimers();
-    vi.stubGlobal("fetch", () => new Promise<Response>(() => {}));
-    const capturePromise = capturePreviewAnnotationScreenshot(annotation, 1_000);
-    await vi.advanceTimersByTimeAsync(1_000);
-    expect(await capturePromise).toEqual({ status: "failed" });
-  });
-
-  it("fails when the crop fetch throws", async () => {
-    vi.stubGlobal("fetch", async () => {
-      throw new Error("data url unreadable");
+  it("fails when the crop is not a data URL", async () => {
+    const capture = await capturePreviewAnnotationScreenshot({
+      ...annotation,
+      screenshot: { ...annotation.screenshot!, dataUrl: "https://example.com/crop.png" },
     });
-    expect(await capturePreviewAnnotationScreenshot(annotation)).toEqual({ status: "failed" });
+    expect(capture).toEqual({ status: "failed" });
   });
 });
