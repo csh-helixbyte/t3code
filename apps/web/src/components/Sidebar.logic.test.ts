@@ -18,6 +18,7 @@ import {
   getFallbackThreadIdAfterDelete,
   getProjectSortTimestamp,
   hasUnseenCompletion,
+  summarizeSidebarAttention,
   isContextMenuPointerDown,
   isSidebarNestedLinkClick,
   isTrailingDoubleClick,
@@ -349,6 +350,42 @@ describe("hasUnseenCompletion", () => {
         session: null,
       }),
     ).toBe(false);
+  });
+});
+
+describe("summarizeSidebarAttention", () => {
+  const baseThread = {
+    archivedAt: null,
+    snoozed: false,
+    hasActionableProposedPlan: false,
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
+    interactionMode: "default" as const,
+    latestTurn: makeLatestTurn(),
+    lastVisitedAt: "2026-03-09T10:10:00.000Z",
+    session: null,
+  };
+  const unread = { lastVisitedAt: "2026-03-09T10:04:00.000Z" };
+
+  it("counts blocked threads once each and tallies unread completions apart", () => {
+    expect(
+      summarizeSidebarAttention([
+        { ...baseThread, ...unread, hasPendingApprovals: true, hasPendingUserInput: true },
+        { ...baseThread, hasPendingUserInput: true },
+        { ...baseThread, ...unread },
+        baseThread,
+      ]),
+    ).toEqual({ approvalCount: 1, inputCount: 1, unreadCount: 1 });
+  });
+
+  it("ignores archived threads and unread news on snoozed threads", () => {
+    expect(
+      summarizeSidebarAttention([
+        { ...baseThread, archivedAt: "2026-03-09T11:00:00.000Z", hasPendingApprovals: true },
+        { ...baseThread, ...unread, snoozed: true },
+        { ...baseThread, snoozed: true, hasPendingUserInput: true },
+      ]),
+    ).toEqual({ approvalCount: 0, inputCount: 1, unreadCount: 0 });
   });
 });
 

@@ -622,6 +622,35 @@ export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
   return completedAt > lastVisitedAt;
 }
 
+export interface SidebarAttentionSummary {
+  approvalCount: number;
+  inputCount: number;
+  unreadCount: number;
+}
+
+/** Rolls up what the collapsed sidebar is hiding, for the toggle's badge.
+    Approvals and input requests block the agent until the user acts, so they
+    are counted; unread completions are only news, so they are a separate
+    tally. Snoozed threads keep quiet about news, but a blocked thread always
+    wakes from snooze, so it is counted regardless. */
+export function summarizeSidebarAttention(
+  threads: ReadonlyArray<
+    ThreadStatusInput & {
+      archivedAt: string | null;
+      snoozed: boolean;
+    }
+  >,
+): SidebarAttentionSummary {
+  const summary: SidebarAttentionSummary = { approvalCount: 0, inputCount: 0, unreadCount: 0 };
+  for (const thread of threads) {
+    if (thread.archivedAt !== null) continue;
+    if (thread.hasPendingApprovals) summary.approvalCount += 1;
+    else if (thread.hasPendingUserInput) summary.inputCount += 1;
+    else if (!thread.snoozed && hasUnseenCompletion(thread)) summary.unreadCount += 1;
+  }
+  return summary;
+}
+
 export function shouldClearThreadSelectionOnMouseDown(target: HTMLElement | null): boolean {
   if (target === null) return true;
   return !target.closest(THREAD_SELECTION_SAFE_SELECTOR);

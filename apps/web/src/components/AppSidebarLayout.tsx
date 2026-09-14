@@ -2,12 +2,15 @@ import { useAtomValue } from "@effect/atom-react";
 import * as Schema from "effect/Schema";
 import {
   useEffect,
+  useMemo,
   useState,
   useSyncExternalStore,
   type CSSProperties,
   type ReactNode,
 } from "react";
 import { useLocation, useNavigate } from "@tanstack/react-router";
+import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
 
 import { isElectron } from "../env";
 import { getLocalStorageItem, removeLocalStorageItem } from "../hooks/useLocalStorage";
@@ -28,7 +31,9 @@ import {
   resolveSidebarStageFocusRingOffsetClass,
   useSidebarStageBackdropVariant,
 } from "./SidebarStageBackdrop";
-import { useProjects } from "../state/entities";
+import { useProjects, useThreadShells } from "../state/entities";
+import { useUiStateStore } from "../uiStateStore";
+import { summarizeSidebarAttention, type SidebarAttentionSummary } from "./Sidebar.logic";
 import {
   resolveInitialThreadSidebarWidth,
   resolveThreadSidebarMaximumWidth,
@@ -69,6 +74,64 @@ function readInitialThreadSidebarWidth(): number {
   }
 }
 
+function useSidebarAttention(): SidebarAttentionSummary {
+  const threads = useThreadShells();
+  const lastVisitedAtById = useUiStateStore((state) => state.threadLastVisitedAtById);
+  return useMemo(() => {
+    const now = new Date().toISOString();
+    return summarizeSidebarAttention(
+      threads.map((thread) => ({
+        ...thread,
+        lastVisitedAt:
+          lastVisitedAtById[scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))],
+        snoozed: effectiveSnoozed(thread, { now }),
+      })),
+    );
+  }, [lastVisitedAtById, threads]);
+}
+
+function describeSidebarAttention(attention: SidebarAttentionSummary): string | null {
+  const parts = [
+    attention.approvalCount > 0 ? `${attention.approvalCount} waiting for approval` : null,
+    attention.inputCount > 0 ? `${attention.inputCount} waiting for your answer` : null,
+    attention.unreadCount > 0 ? `${attention.unreadCount} finished, unread` : null,
+  ].filter((part) => part !== null);
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+// Sits on the collapsed toggle's corner. A number means threads are blocked on
+// the user (amber when any need approval, indigo for questions); a plain dot
+// means only unread completions. Static on purpose: no pulse to repaint.
+function SidebarAttentionBadge({ attention }: { attention: SidebarAttentionSummary }) {
+  const blockedCount = attention.approvalCount + attention.inputCount;
+  if (blockedCount > 0) {
+    return (
+      <span
+        aria-hidden
+        className={cn(
+          "pointer-events-none absolute -top-1 -right-1.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-semibold leading-none tabular-nums ring-2 ring-background",
+          attention.approvalCount > 0
+            ? "bg-amber-400 text-amber-950"
+            : "bg-indigo-500 text-white dark:bg-indigo-400 dark:text-indigo-950",
+        )}
+        data-sidebar-attention="blocked"
+      >
+        {blockedCount > 9 ? "9+" : blockedCount}
+      </span>
+    );
+  }
+  if (attention.unreadCount > 0) {
+    return (
+      <span
+        aria-hidden
+        className="pointer-events-none absolute top-0.5 right-0.5 size-2 rounded-full bg-emerald-500 ring-2 ring-background dark:bg-emerald-400"
+        data-sidebar-attention="unread"
+      />
+    );
+  }
+  return null;
+}
+
 function SidebarControl() {
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const { toggleSidebar, peeking, peekHandlers } = useSidebar();
@@ -80,6 +143,10 @@ function SidebarControl() {
     environmentIdentificationMode === "artwork",
   );
   const shortcutLabel = shortcutLabelForCommand(keybindings, "sidebar.toggle");
+  const attention = useSidebarAttention();
+  // An open sidebar already shows every row's status, so the badge only
+  // speaks for a collapsed one.
+  const attentionLabel = isSidebarOpen ? null : describeSidebarAttention(attention);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -111,27 +178,35 @@ function SidebarControl() {
       data-sidebar-control=""
     >
       <Tooltip>
-        <TooltipTrigger
-          render={
-            <SidebarTrigger
-              // Hovering the trigger while collapsed previews the sidebar as an overlay.
-              onPointerEnter={isSidebarOpen ? undefined : peekHandlers.onPointerEnter}
-              onPointerLeave={peekHandlers.onPointerLeave}
-              className={cn(
-                "pointer-events-auto",
-                isSidebarVisible &&
-                  stageBackdropVariant &&
-                  "focus-visible:ring-white/90 [&_svg]:stroke-white/90! [&_svg]:opacity-100! [&_svg]:hover:stroke-white! [:hover,[data-pressed]]:bg-white/15",
-                isSidebarVisible &&
-                  stageBackdropVariant &&
-                  resolveSidebarStageFocusRingOffsetClass(stageBackdropVariant),
-              )}
-              aria-label="Toggle main sidebar"
-            />
-          }
-        />
+        <span className="relative flex">
+          <TooltipTrigger
+            render={
+              <SidebarTrigger
+                // Hovering the trigger while collapsed previews the sidebar as an overlay.
+                onPointerEnter={isSidebarOpen ? undefined : peekHandlers.onPointerEnter}
+                onPointerLeave={peekHandlers.onPointerLeave}
+                className={cn(
+                  "pointer-events-auto",
+                  isSidebarVisible &&
+                    stageBackdropVariant &&
+                    "focus-visible:ring-white/90 [&_svg]:stroke-white/90! [&_svg]:opacity-100! [&_svg]:hover:stroke-white! [:hover,[data-pressed]]:bg-white/15",
+                  isSidebarVisible &&
+                    stageBackdropVariant &&
+                    resolveSidebarStageFocusRingOffsetClass(stageBackdropVariant),
+                )}
+                aria-label={
+                  attentionLabel ? `Toggle main sidebar, ${attentionLabel}` : "Toggle main sidebar"
+                }
+              />
+            }
+          />
+          {isSidebarOpen ? null : <SidebarAttentionBadge attention={attention} />}
+        </span>
         <TooltipPopup side="bottom">
           Toggle main sidebar{shortcutLabel ? ` (${shortcutLabel})` : ""}
+          {attentionLabel ? (
+            <span className="block text-muted-foreground">{attentionLabel}</span>
+          ) : null}
         </TooltipPopup>
       </Tooltip>
     </div>
