@@ -578,6 +578,18 @@ export const isPreviewRefreshShortcut = (input: Electron.Input): boolean =>
   !input.shift &&
   !input.alt;
 
+/**
+ * The zoom a key chord asks for, matching the app's View menu (Cmd/Ctrl with
+ * `=`, `+`, `-` or `0`). Shift is allowed because `+` needs it on most layouts.
+ */
+export const previewZoomShortcut = (input: Electron.Input): "in" | "out" | "reset" | null => {
+  if (input.type !== "keyDown" || !(input.meta || input.control) || input.alt) return null;
+  if (input.key === "=" || input.key === "+") return "in";
+  if (input.key === "-" || input.key === "_") return "out";
+  if (input.key === "0" && !input.shift) return "reset";
+  return null;
+};
+
 export const isPreviewEditingShortcut = (
   input: Electron.Input,
   platform: NodeJS.Platform,
@@ -2031,6 +2043,17 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           ).pipe(Effect.ignore),
         );
         return;
+      }
+      // The guest ignores menu shortcuts, so without this the chord falls through
+      // to the app's View menu and zooms the whole UI instead of this page.
+      const zoom = previewZoomShortcut(input);
+      if (zoom !== null) {
+        event.preventDefault();
+        runFork(
+          applyZoom(tabId, (current) =>
+            zoom === "reset" ? DEFAULT_ZOOM_FACTOR : nextZoomLevel(current, zoom),
+          ).pipe(Effect.ignore),
+        );
       }
     };
     yield* Scope.addFinalizer(

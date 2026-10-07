@@ -72,6 +72,33 @@ describe("isPreviewRefreshShortcut", () => {
   });
 });
 
+describe("previewZoomShortcut", () => {
+  const input = (key: string, overrides: Partial<Electron.Input> = {}) =>
+    ({
+      type: "keyDown",
+      key,
+      meta: true,
+      control: false,
+      shift: false,
+      alt: false,
+      ...overrides,
+    }) as Electron.Input;
+
+  it("maps the View menu zoom chords and ignores other variants", () => {
+    expect(PreviewManager.previewZoomShortcut(input("="))).toBe("in");
+    expect(PreviewManager.previewZoomShortcut(input("+", { shift: true }))).toBe("in");
+    expect(PreviewManager.previewZoomShortcut(input("-"))).toBe("out");
+    expect(PreviewManager.previewZoomShortcut(input("0"))).toBe("reset");
+    expect(PreviewManager.previewZoomShortcut(input("=", { meta: false, control: true }))).toBe(
+      "in",
+    );
+    expect(PreviewManager.previewZoomShortcut(input("=", { meta: false }))).toBe(null);
+    expect(PreviewManager.previewZoomShortcut(input("=", { alt: true }))).toBe(null);
+    expect(PreviewManager.previewZoomShortcut(input("=", { type: "keyUp" }))).toBe(null);
+    expect(PreviewManager.previewZoomShortcut(input("r"))).toBe(null);
+  });
+});
+
 describe("isPreviewEditingShortcut", () => {
   const input = (platform: NodeJS.Platform, key: string, overrides: Partial<Electron.Input> = {}) =>
     ({
@@ -583,7 +610,7 @@ describe("PreviewManager", () => {
         ).toHaveBeenCalledWith(true);
         const beforeInput = preview.listeners.get("before-input-event")!;
         for (const control of [false, true]) {
-          for (const key of ["k", ",", "w", "j", "q", "+"]) {
+          for (const key of ["k", ",", "w", "j", "q", "p"]) {
             for (const type of ["keyDown", "keyUp"]) {
               const preventDefault = vi.fn();
               beforeInput(
@@ -615,6 +642,25 @@ describe("PreviewManager", () => {
         yield* Effect.yieldNow;
         expect(preventDefault).toHaveBeenCalledOnce();
         expect(preview.reload).toHaveBeenCalledOnce();
+        expect(sendInputEvent).not.toHaveBeenCalled();
+
+        const preventZoom = vi.fn();
+        beforeInput(
+          { preventDefault: preventZoom } as never,
+          {
+            type: "keyDown",
+            key: "=",
+            meta: true,
+            control: false,
+            shift: false,
+            alt: false,
+          } as never,
+        );
+        yield* Effect.yieldNow;
+        expect(preventZoom).toHaveBeenCalledOnce();
+        expect(
+          (preview.webContents as Electron.WebContents).setZoomFactor,
+        ).toHaveBeenLastCalledWith(1.1);
         expect(sendInputEvent).not.toHaveBeenCalled();
       }),
     ),
