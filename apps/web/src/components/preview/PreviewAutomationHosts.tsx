@@ -90,7 +90,10 @@ import {
   resolvePreviewAutomationTarget,
 } from "./previewAutomationTarget";
 import { resolveHostWaitBudgetMs, waitForHostReadiness } from "./previewAutomationHostBudget";
-import { runPreviewClickKeepingHostFocus } from "./previewClickFocus";
+import {
+  runPreviewActionKeepingHostFocus,
+  runPreviewClickKeepingHostFocus,
+} from "./previewClickFocus";
 import { isPreviewViewportReady } from "./previewViewportReadiness";
 import { shouldRollbackPreviewViewport } from "./previewViewportRollback";
 
@@ -580,16 +583,19 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                 url: input.url!,
               },
             );
-            await ready.bridge.navigate(ready.runtimeTabId, resolution.resolvedUrl);
-            await waitForNavigationReadiness(
-              threadRef,
-              request.requestId,
-              ready.tabId,
-              ready.runtimeTabId,
-              request.operation,
-              input.readiness ?? "load",
-              input.timeoutMs ?? request.timeoutMs,
-            );
+            // A loading page can autofocus a field, which takes focus from the host.
+            await runPreviewActionKeepingHostFocus(ready.runtimeTabId, async () => {
+              await ready.bridge.navigate(ready.runtimeTabId, resolution.resolvedUrl);
+              await waitForNavigationReadiness(
+                threadRef,
+                request.requestId,
+                ready.tabId,
+                ready.runtimeTabId,
+                request.operation,
+                input.readiness ?? "load",
+                input.timeoutMs ?? request.timeoutMs,
+              );
+            });
             return await currentStatus(threadRef, ready.tabId);
           }
           case "resize": {
@@ -696,37 +702,47 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
           }
           case "type": {
             const ready = await requireReadyTab();
-            return await ready.bridge.automation.type(
-              ready.runtimeTabId,
-              request.input as Parameters<typeof ready.bridge.automation.type>[1],
+            return await runPreviewActionKeepingHostFocus(ready.runtimeTabId, () =>
+              ready.bridge.automation.type(
+                ready.runtimeTabId,
+                request.input as Parameters<typeof ready.bridge.automation.type>[1],
+              ),
             );
           }
           case "press": {
             const ready = await requireReadyTab();
-            return await ready.bridge.automation.press(
-              ready.runtimeTabId,
-              request.input as Parameters<typeof ready.bridge.automation.press>[1],
+            return await runPreviewActionKeepingHostFocus(ready.runtimeTabId, () =>
+              ready.bridge.automation.press(
+                ready.runtimeTabId,
+                request.input as Parameters<typeof ready.bridge.automation.press>[1],
+              ),
             );
           }
           case "scroll": {
             const ready = await requireReadyTab();
-            return await ready.bridge.automation.scroll(
-              ready.runtimeTabId,
-              request.input as Parameters<typeof ready.bridge.automation.scroll>[1],
+            return await runPreviewActionKeepingHostFocus(ready.runtimeTabId, () =>
+              ready.bridge.automation.scroll(
+                ready.runtimeTabId,
+                request.input as Parameters<typeof ready.bridge.automation.scroll>[1],
+              ),
             );
           }
           case "evaluate": {
             const ready = await requireReadyTab();
-            return await ready.bridge.automation.evaluate(
-              ready.runtimeTabId,
-              request.input as Parameters<typeof ready.bridge.automation.evaluate>[1],
+            return await runPreviewActionKeepingHostFocus(ready.runtimeTabId, () =>
+              ready.bridge.automation.evaluate(
+                ready.runtimeTabId,
+                request.input as Parameters<typeof ready.bridge.automation.evaluate>[1],
+              ),
             );
           }
           case "waitFor": {
             const ready = await requireReadyTab();
-            return await ready.bridge.automation.waitFor(
-              ready.runtimeTabId,
-              request.input as Parameters<typeof ready.bridge.automation.waitFor>[1],
+            return await runPreviewActionKeepingHostFocus(ready.runtimeTabId, () =>
+              ready.bridge.automation.waitFor(
+                ready.runtimeTabId,
+                request.input as Parameters<typeof ready.bridge.automation.waitFor>[1],
+              ),
             );
           }
           case "recordingStart": {

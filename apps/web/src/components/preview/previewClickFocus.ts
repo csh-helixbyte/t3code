@@ -65,3 +65,12 @@ export async function runPreviewClickKeepingHostFocus<A>(
     restoreHostFocus(entry);
   }
 }
+
+/**
+ * The same hand-back for every other agent action. A page script, typed text, a
+ * key press or a page load can each focus an element in the page, which moves
+ * keyboard focus into its <webview> exactly as a click does. Focus is restored
+ * only when it ended up in this tab's page, so an action that leaves focus alone
+ * changes nothing.
+ */
+export const runPreviewActionKeepingHostFocus = runPreviewClickKeepingHostFocus;

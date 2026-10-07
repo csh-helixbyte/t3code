@@ -2,7 +2,10 @@
 
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
-import { runPreviewClickKeepingHostFocus } from "./previewClickFocus";
+import {
+  runPreviewActionKeepingHostFocus,
+  runPreviewClickKeepingHostFocus,
+} from "./previewClickFocus";
 
 const TAB = "runtime-tab";
 
@@ -148,5 +151,31 @@ describe("runPreviewClickKeepingHostFocus", () => {
     await runPreviewClickKeepingHostFocus(TAB, async () => undefined);
 
     expect(document.activeElement).toBe(webview);
+  });
+});
+
+describe("runPreviewActionKeepingHostFocus", () => {
+  it("gives focus back when a page script focuses an element in the page", async () => {
+    const composer = mount("textarea");
+    const webview = mount("webview", TAB);
+    composer.focus();
+
+    await runPreviewActionKeepingHostFocus(TAB, async () => {
+      webview.focus();
+    });
+
+    expect(document.activeElement).toBe(composer);
+  });
+
+  it("leaves focus alone when the action did not move it into the page", async () => {
+    const composer = mount("textarea");
+    const other = mount("input");
+    composer.focus();
+
+    await runPreviewActionKeepingHostFocus(TAB, async () => {
+      other.focus();
+    });
+
+    expect(document.activeElement).toBe(other);
   });
 });
