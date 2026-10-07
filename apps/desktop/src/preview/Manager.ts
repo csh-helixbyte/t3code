@@ -74,6 +74,7 @@ import {
   CANCEL_PICK_CHANNEL,
   ELEMENT_PICKED_CHANNEL,
   HUMAN_INPUT_CHANNEL,
+  EDIT_COMMAND_CHANNEL,
   MOUSE_NAVIGATE_CHANNEL,
   RECORDING_CURSOR_CHANNEL,
   RECORDING_POINTER_CHANNEL,
@@ -82,6 +83,11 @@ import {
   RECORDING_CONTROLLER_CHANNEL,
   START_PICK_CHANNEL,
 } from "./GuestProtocol.ts";
+import {
+  PREVIEW_EDIT_COMMANDS,
+  previewEditCommandForKey,
+  type PreviewEditCommand,
+} from "./PreviewEditing.ts";
 import { isPreviewAnnotationPayload } from "./PickedElementPayload.ts";
 import { playwrightInjectedRuntimeInstallExpression } from "./PlaywrightInjectedRuntime.ts";
 import {
@@ -575,25 +581,7 @@ export const isPreviewRefreshShortcut = (input: Electron.Input): boolean =>
 export const isPreviewEditingShortcut = (
   input: Electron.Input,
   platform: NodeJS.Platform,
-): boolean => {
-  const isMac = platform === "darwin";
-  if (isMac ? !input.meta || input.control : !input.control || input.meta) return false;
-
-  const key = input.key.toLowerCase();
-  // Option changes the DOM key for macOS Paste and Match Style (for example, to ◊).
-  if (isMac && input.alt && input.shift && input.code === "KeyV") return true;
-  if (key === "v" && input.shift) return input.alt === isMac;
-  if (input.alt) return false;
-  if (key === "z") return !input.shift || platform !== "win32";
-  if (input.shift) return false;
-  return (
-    key === "a" ||
-    key === "c" ||
-    key === "v" ||
-    key === "x" ||
-    (key === "y" && platform === "win32")
-  );
-};
+): boolean => previewEditCommandForKey(input, platform) !== null;
 
 const isPreviewInputSignal = (value: unknown): value is PreviewInputSignal => {
   if (typeof value !== "object" || value === null || !("kind" in value)) return false;
@@ -2011,6 +1999,19 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           webContents.getFocusedWebContents() !== contents,
       );
     };
+    // A tab never opens the menu gate. The guest preload reports an editing chord
+    // the page left unhandled, and the edit runs on this tab directly. The menu
+    // route depended on which WebContents Electron called focused, which for a
+    // <webview> guest is often the host, and on the shared menu flag still being
+    // open when the page's key ack came back.
+    const editCommand = (_event: unknown, command?: unknown): void => {
+      if (typeof command !== "string" || !PREVIEW_EDIT_COMMANDS.has(command)) return;
+      runFork(
+        attempt({ operation: `edit.${command}`, tabId, webContentsId: wc.id }, () => {
+          wc[command as PreviewEditCommand]();
+        }).pipe(Effect.ignore),
+      );
+    };
     // A popup opens with Electron's default handler, so the page inside it could
     // otherwise spawn native windows without limit. Nothing in an OAuth flow
     // opens a second popup, so the chain stops at the first one.
@@ -2022,7 +2023,6 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       });
     };
     const beforeInput = (event: Electron.Event, input: Electron.Input): void => {
-      syncMenuShortcuts(wc, input);
       if (isPreviewRefreshShortcut(input)) {
         event.preventDefault();
         runFork(
@@ -2052,12 +2052,13 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         wc.ipc.off(HUMAN_INPUT_CHANNEL, humanInput);
         wc.ipc.off(RECORDING_INPUT_CHANNEL, recordingInput);
         wc.ipc.off(MOUSE_NAVIGATE_CHANNEL, mouseNavigate);
+        wc.ipc.off(EDIT_COMMAND_CHANNEL, editCommand);
       }).pipe(Effect.ignore),
     );
     const install = Effect.fn("PreviewManager.installWebContentsListeners")(function* () {
       yield* attempt({ operation: "attachListeners", tabId, webContentsId: wc.id }, () => {
-        // Only focused native editing shortcuts may reach the application menu.
-        // Other preview input, including CDP keys, belongs to the page.
+        // No preview input reaches the application menu, including CDP keys.
+        // Editing shortcuts arrive through EDIT_COMMAND_CHANNEL instead.
         wc.setIgnoreMenuShortcuts(true);
         wc.on("did-start-navigation", navigationStarted);
         wc.on("did-navigate", syncNavigation);
@@ -2072,6 +2073,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         wc.ipc.on(HUMAN_INPUT_CHANNEL, humanInput);
         wc.ipc.on(RECORDING_INPUT_CHANNEL, recordingInput);
         wc.ipc.on(MOUSE_NAVIGATE_CHANNEL, mouseNavigate);
+        wc.ipc.on(EDIT_COMMAND_CHANNEL, editCommand);
         wc.setWindowOpenHandler((details) => {
           if (previewWindowOpenAction(details) === "popup") {
             return { action: "allow", overrideBrowserWindowOptions: POPUP_WINDOW_OPTIONS };

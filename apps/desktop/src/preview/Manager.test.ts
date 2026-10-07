@@ -24,6 +24,7 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as BrowserSession from "./BrowserSession.ts";
+import { EDIT_COMMAND_CHANNEL } from "./GuestProtocol.ts";
 import * as PreviewManager from "./Manager.ts";
 
 describe("fitPictureInPictureContentSize", () => {
@@ -465,6 +466,8 @@ const makeFaviconWebContents = (options?: {
     navigationHistory: { canGoBack: () => false, canGoForward: () => false },
     setIgnoreMenuShortcuts: vi.fn(),
     setWindowOpenHandler: vi.fn(),
+    paste: vi.fn(),
+    selectAll: vi.fn(),
     executeJavaScriptInIsolatedWorld,
     debugger: {
       isAttached: () => false,
@@ -617,7 +620,50 @@ describe("PreviewManager", () => {
     ),
   );
 
-  effectIt.effect("preserves focused browser editing in tabs and sign-in popups", () =>
+  effectIt.effect("runs unhandled editing shortcuts directly on the tab", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const preview = makeFaviconWebContents();
+        fromId.mockReturnValue(preview.webContents);
+        yield* manager.createTab("tab_editing");
+        yield* manager.registerWebview("tab_editing", 42);
+        const contents = preview.webContents as unknown as {
+          readonly ipc: { readonly on: ReturnType<typeof vi.fn> };
+          readonly paste: ReturnType<typeof vi.fn>;
+          readonly selectAll: ReturnType<typeof vi.fn>;
+          readonly setIgnoreMenuShortcuts: ReturnType<typeof vi.fn>;
+        };
+
+        // A focused paste no longer opens the menu gate; the menu route is gone for tabs.
+        getFocusedWebContents.mockReturnValue(preview.webContents as never);
+        preview.listeners.get("before-input-event")!(
+          { preventDefault: vi.fn() } as never,
+          {
+            type: "keyDown",
+            key: "v",
+            meta: true,
+            control: false,
+            shift: false,
+            alt: false,
+          } as never,
+        );
+        expect(contents.setIgnoreMenuShortcuts).toHaveBeenLastCalledWith(true);
+
+        const editCommand = contents.ipc.on.mock.calls.find(
+          ([channel]) => channel === EDIT_COMMAND_CHANNEL,
+        )?.[1] as (event: unknown, command?: unknown) => void;
+        editCommand({}, "paste");
+        editCommand({}, "selectAll");
+        editCommand({}, "reload");
+        editCommand({}, 7);
+        yield* Effect.yieldNow;
+        expect(contents.paste).toHaveBeenCalledOnce();
+        expect(contents.selectAll).toHaveBeenCalledOnce();
+      }),
+    ),
+  );
+
+  effectIt.effect("preserves focused browser editing in sign-in popups", () =>
     withManager((manager) =>
       Effect.gen(function* () {
         const preview = makeFaviconWebContents();
@@ -627,41 +673,37 @@ describe("PreviewManager", () => {
 
         const popup = makeFaviconWebContents({ id: 43 });
         preview.listeners.get("did-create-window")!({ webContents: popup.webContents } as never);
-        expect(
-          (popup.webContents as Electron.WebContents).setIgnoreMenuShortcuts,
-        ).toHaveBeenCalledWith(true);
+        const contents = popup.webContents as Electron.WebContents;
+        expect(contents.setIgnoreMenuShortcuts).toHaveBeenCalledWith(true);
 
-        for (const browser of [preview, popup]) {
-          const contents = browser.webContents as Electron.WebContents;
-          getFocusedWebContents.mockReturnValue(browser.webContents as never);
-          const beforeInput = browser.listeners.get("before-input-event")!;
-          const preventDefault = vi.fn();
-          const input = {
-            type: "keyDown",
-            key: "v",
-            meta: true,
-            control: false,
-            shift: false,
-            alt: false,
-          };
-          beforeInput({ preventDefault } as never, input as never);
-          expect(contents.setIgnoreMenuShortcuts).toHaveBeenLastCalledWith(false);
-          // Releasing Command must not disable native fallback for the pending paste.
-          beforeInput(
-            { preventDefault } as never,
-            { ...input, type: "keyUp", key: "Meta", meta: false } as never,
-          );
-          expect(contents.setIgnoreMenuShortcuts).toHaveBeenLastCalledWith(false);
+        getFocusedWebContents.mockReturnValue(popup.webContents as never);
+        const beforeInput = popup.listeners.get("before-input-event")!;
+        const preventDefault = vi.fn();
+        const input = {
+          type: "keyDown",
+          key: "v",
+          meta: true,
+          control: false,
+          shift: false,
+          alt: false,
+        };
+        beforeInput({ preventDefault } as never, input as never);
+        expect(contents.setIgnoreMenuShortcuts).toHaveBeenLastCalledWith(false);
+        // Releasing Command must not disable native fallback for the pending paste.
+        beforeInput(
+          { preventDefault } as never,
+          { ...input, type: "keyUp", key: "Meta", meta: false } as never,
+        );
+        expect(contents.setIgnoreMenuShortcuts).toHaveBeenLastCalledWith(false);
 
-          beforeInput({ preventDefault } as never, { ...input, key: "w" } as never);
-          expect(contents.setIgnoreMenuShortcuts).toHaveBeenLastCalledWith(true);
+        beforeInput({ preventDefault } as never, { ...input, key: "w" } as never);
+        expect(contents.setIgnoreMenuShortcuts).toHaveBeenLastCalledWith(true);
 
-          // An injected paste in an unfocused guest cannot edit the active renderer.
-          getFocusedWebContents.mockReturnValue(null);
-          beforeInput({ preventDefault } as never, input as never);
-          expect(contents.setIgnoreMenuShortcuts).toHaveBeenLastCalledWith(true);
-          expect(preventDefault).not.toHaveBeenCalled();
-        }
+        // An injected paste in an unfocused popup cannot edit the active renderer.
+        getFocusedWebContents.mockReturnValue(null);
+        beforeInput({ preventDefault } as never, input as never);
+        expect(contents.setIgnoreMenuShortcuts).toHaveBeenLastCalledWith(true);
+        expect(preventDefault).not.toHaveBeenCalled();
       }),
     ),
   );

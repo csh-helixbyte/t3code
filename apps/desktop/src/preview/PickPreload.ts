@@ -17,12 +17,14 @@ import type {
 
 import { resolveAnnotationSubmission } from "./AnnotationKeyboard.ts";
 import { previewAnnotationStyles } from "./AnnotationStyles.generated.ts";
+import { previewEditCommandForKey } from "./PreviewEditing.ts";
 import { installRecordingCursor } from "./RecordingCursor.ts";
 import { DEFAULT_RECORDING_INPUT_OPTIONS } from "./RecordingInput.ts";
 import {
   ANNOTATION_CAPTURED_CHANNEL,
   ANNOTATION_THEME_CHANNEL,
   CANCEL_PICK_CHANNEL,
+  EDIT_COMMAND_CHANNEL,
   ELEMENT_PICKED_CHANNEL,
   HUMAN_INPUT_CHANNEL,
   MOUSE_NAVIGATE_CHANNEL,
@@ -187,6 +189,32 @@ const reportHumanKeyInput = (event: KeyboardEvent): void => {
 
 window.addEventListener("pointerdown", reportHumanPointerInput, true);
 window.addEventListener("keydown", reportHumanKeyInput, true);
+
+// The main process keeps this guest's menu shortcuts off, so Cmd+A/C/X/V/Z never
+// reach the app's Edit menu from here. Once the key has finished dispatching, an
+// editing chord the page left alone becomes a direct edit on this tab. Waiting
+// until dispatch ends lets a page listener anywhere, editors included, claim it.
+const requestUnhandledEdit = (event: KeyboardEvent): void => {
+  if (!event.isTrusted || event.repeat || event.isComposing) return;
+  const command = previewEditCommandForKey(
+    {
+      key: event.key,
+      code: event.code,
+      meta: event.metaKey,
+      control: event.ctrlKey,
+      alt: event.altKey,
+      shift: event.shiftKey,
+    },
+    // oxlint-disable-next-line t3code/no-global-process-runtime -- Electron exposes the client platform in its sandboxed preload process.
+    process.platform,
+  );
+  if (command === null) return;
+  setTimeout(() => {
+    if (!event.defaultPrevented) ipcRenderer.send(EDIT_COMMAND_CHANNEL, command);
+  }, 0);
+};
+
+window.addEventListener("keydown", requestUnhandledEdit);
 
 // Mouse thumb buttons: `button === 3` is Back, `button === 4` is Forward.
 const MOUSE_BUTTON_BACK = 3;
