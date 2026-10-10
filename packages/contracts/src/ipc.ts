@@ -663,6 +663,12 @@ export interface DesktopPreviewPointerEvent {
   createdAt: string;
 }
 
+/** The agent started or stopped acting on a preview tab hosted by this window. */
+export interface DesktopPreviewAgentActivityEvent {
+  tabId: string;
+  active: boolean;
+}
+
 /** A `target="_blank"` link the previewed page asked to open beside itself. */
 export interface DesktopPreviewOpenLinkEvent {
   tabId: string;
@@ -1370,6 +1376,7 @@ export interface DesktopPreviewBridge {
   };
   onStateChange: (listener: (tabId: string, state: DesktopPreviewTabState) => void) => () => void;
   onPointerEvent: (listener: (event: DesktopPreviewPointerEvent) => void) => () => void;
+  onAgentActivity: (listener: (event: DesktopPreviewAgentActivityEvent) => void) => () => void;
   onOpenLink: (listener: (event: DesktopPreviewOpenLinkEvent) => void) => () => void;
 }
 

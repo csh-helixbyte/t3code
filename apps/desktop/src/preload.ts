@@ -1,5 +1,6 @@
 import type {
   DesktopBridge,
+  DesktopPreviewAgentActivityEvent,
   DesktopPreviewOpenLinkEvent,
   DesktopPreviewPointerEvent,
   DesktopPreviewRecordingInputEvent,
@@ -428,6 +429,15 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       ipcRenderer.on(IpcChannels.PREVIEW_POINTER_EVENT_CHANNEL, wrappedListener);
       return () =>
         ipcRenderer.removeListener(IpcChannels.PREVIEW_POINTER_EVENT_CHANNEL, wrappedListener);
+    },
+    onAgentActivity: (listener) => {
+      const wrappedListener = (_event: Electron.IpcRendererEvent, activity: unknown) => {
+        if (typeof activity !== "object" || activity === null) return;
+        listener(activity as DesktopPreviewAgentActivityEvent);
+      };
+      ipcRenderer.on(IpcChannels.PREVIEW_AGENT_ACTIVITY_CHANNEL, wrappedListener);
+      return () =>
+        ipcRenderer.removeListener(IpcChannels.PREVIEW_AGENT_ACTIVITY_CHANNEL, wrappedListener);
     },
     onOpenLink: (listener) => {
       const wrappedListener = (_event: Electron.IpcRendererEvent, linkEvent: unknown) => {

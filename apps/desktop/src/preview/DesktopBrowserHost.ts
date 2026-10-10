@@ -31,6 +31,10 @@ const lineEncoder = new TextEncoder();
 /** CDP commands through which an agent clicks, types, or navigates the page. */
 const AGENT_INPUT_COMMAND =
   /"method":"(?:Input\.|Page\.navigate"|Runtime\.(?:evaluate|callFunctionOn)")/;
+/** Playwright writes a command's id first, and the relay writes a reply's id first. */
+const LEADING_ID = /^\{"id":(\d+)[,}]/;
+const NAVIGATION_LOADS = /"loaderId":"[^"]/;
+const NAVIGATION_NEVER_LOADS = /"error(?:Text)?":|"isDownload":true/;
 /** How long after an agent's input a download still counts as the agent's. */
 const AGENT_DOWNLOAD_WINDOW_MS = 5_000;
 
@@ -57,6 +61,11 @@ interface AttachedTab {
   pendingDownloadGuid: string | null;
   /** When the server last sent this page input, which only an agent does. */
   agentInputAt: number;
+  /** Agent input commands still awaiting their reply, by CDP id. */
+  readonly agentCommands: Set<number>;
+  /** An agent navigation stays in flight until its page loads, so autofocus counts too. */
+  agentNavigation: number | null;
+  agentBusy: boolean;
   readonly onMessage: (
     event: Electron.Event,
     method: string,
@@ -93,6 +102,14 @@ export class DesktopBrowserHost extends Context.Service<
       readonly x: number;
       readonly y: number;
     }>;
+    /**
+     * When the agent starts and stops acting on an attached tab. The window
+     * hosting the tab keeps keyboard focus out of the page across each action.
+     */
+    readonly agentActivity: Stream.Stream<{
+      readonly key: DesktopBrowserTabKey;
+      readonly active: boolean;
+    }>;
   }
 >()("@t3tools/desktop/preview/DesktopBrowserHost") {}
 
@@ -104,9 +121,39 @@ export const make = Effect.gen(function* () {
     readonly x: number;
     readonly y: number;
   }>(16);
+  const agentActivity = yield* PubSub.unbounded<{
+    readonly key: DesktopBrowserTabKey;
+    readonly active: boolean;
+  }>();
   const runFork = Effect.runForkWith(yield* Effect.context<never>());
   const tabs = new Map<string, AttachedTab>();
   const emit = (event: DesktopBrowserEventType) => runFork(PubSub.publish(outbox, event));
+
+  const syncAgentBusy = (tab: AttachedTab) => {
+    const busy = tab.agentCommands.size > 0;
+    if (busy === tab.agentBusy) return;
+    tab.agentBusy = busy;
+    runFork(PubSub.publish(agentActivity, { key: tab.key, active: busy }));
+  };
+
+  const settleAgentCommand = (tab: AttachedTab, reply: string) => {
+    const id = Number(LEADING_ID.exec(reply)?.[1]);
+    if (!tab.agentCommands.has(id)) return;
+    if (id === tab.agentNavigation) {
+      // A navigation that commits a new document waits for its load. One that
+      // fails, stays in the document, or downloads never fires one.
+      if (NAVIGATION_LOADS.test(reply) && !NAVIGATION_NEVER_LOADS.test(reply)) return;
+      tab.agentNavigation = null;
+    }
+    tab.agentCommands.delete(id);
+    syncAgentBusy(tab);
+  };
+
+  const clearAgentCommands = (tab: AttachedTab) => {
+    tab.agentCommands.clear();
+    tab.agentNavigation = null;
+    syncAgentBusy(tab);
+  };
 
   const relayFor = (tab: AttachedTab) => {
     if (tab.relay) return tab.relay;
@@ -131,6 +178,7 @@ export const make = Effect.gen(function* () {
       // A released relay's late replies belong to a connection that is gone.
       (message) => {
         if (tab.relay === relay && tabs.get(keyOf(tab.key)) === tab) {
+          if (tab.agentCommands.size > 0) settleAgentCommand(tab, message);
           emit({ type: "cdp", ...tab.key, message });
         }
       },
@@ -160,6 +208,7 @@ export const make = Effect.gen(function* () {
     if (!tab) return;
     tabs.delete(id);
     tab.debuggee.debugger.off("message", tab.onMessage);
+    clearAgentCommands(tab);
     emit({ type: "detached", ...key });
   };
 
@@ -174,7 +223,15 @@ export const make = Effect.gen(function* () {
       downloadDirectory: null,
       pendingDownloadGuid: null,
       agentInputAt: Number.NEGATIVE_INFINITY,
+      agentCommands: new Set(),
+      agentNavigation: null,
+      agentBusy: false,
       onMessage: (_event, method, params, sessionId) => {
+        if (method === "Page.loadEventFired" && !sessionId && tab.agentNavigation !== null) {
+          tab.agentCommands.delete(tab.agentNavigation);
+          tab.agentNavigation = null;
+          syncAgentBusy(tab);
+        }
         if (method === "Browser.downloadWillBegin") {
           const guid = (params as { guid?: unknown } | undefined)?.guid;
           tab.pendingDownloadGuid = typeof guid === "string" ? guid : null;
@@ -201,10 +258,22 @@ export const make = Effect.gen(function* () {
       if (command.value.type === "release") {
         // A new server connection starts with a fresh relay and fresh sessions.
         tab.relay = null;
+        clearAgentCommands(tab);
         return;
       }
-      if (AGENT_INPUT_COMMAND.test(command.value.message)) tab.agentInputAt = performance.now();
-      relayFor(tab).receive(command.value.message);
+      const { message } = command.value;
+      if (AGENT_INPUT_COMMAND.test(message)) {
+        tab.agentInputAt = performance.now();
+        const id = LEADING_ID.exec(message)?.[1];
+        if (id !== undefined) {
+          // The agent has moved on, so a page that never loads holds nothing up.
+          if (tab.agentNavigation !== null) tab.agentCommands.delete(tab.agentNavigation);
+          tab.agentNavigation = message.includes('"method":"Page.navigate"') ? Number(id) : null;
+          tab.agentCommands.add(Number(id));
+          syncAgentBusy(tab);
+        }
+      }
+      relayFor(tab).receive(message);
     });
 
   const humanStartedDownload = (source: Electron.WebContents) => {
@@ -226,6 +295,7 @@ export const make = Effect.gen(function* () {
 
   return DesktopBrowserHost.of({
     pointers: Stream.fromPubSub(pointers),
+    agentActivity: Stream.fromPubSub(agentActivity),
     // Subscribes before announcing, so no attach falls between the two.
     events: Stream.unwrap(
       Effect.gen(function* () {

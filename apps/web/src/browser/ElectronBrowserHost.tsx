@@ -21,6 +21,7 @@ import { useBrowserPointerStore } from "./browserPointerStore";
 import { HostedBrowserWebview } from "./HostedBrowserWebview";
 import { openUrlInPreview } from "./openFileInPreview";
 import { rendersServerTabNatively } from "./previewRuntime";
+import { handlePreviewAgentActivity } from "./previewAgentFocus";
 import { previewRuntimeTabId } from "./previewRuntimeTabId";
 
 export function ElectronBrowserHost() {
@@ -96,6 +97,8 @@ export function ElectronBrowserHost() {
       useBrowserPointerStore.getState().apply(event);
     });
   }, []);
+
+  useEffect(() => window.desktopBridge?.preview?.onAgentActivity(handlePreviewAgentActivity), []);
 
   // A `target="_blank"` link inside a hosted page opens as another tab of the
   // same thread, so the page that held the link stays where it is.

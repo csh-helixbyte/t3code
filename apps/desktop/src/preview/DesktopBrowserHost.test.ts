@@ -19,7 +19,7 @@ const key = { threadId: "thread-1", tabId: "tab-1" };
 /** A tab's webContents and debugger, with the debugger's commands left pending until released. */
 const makeDebuggee = () => {
   const emitter = new NodeEvents.EventEmitter();
-  const pending: Array<() => void> = [];
+  const pending: Array<(result?: unknown) => void> = [];
   const debuggee = Object.assign(emitter, {
     sendCommand: (method: string) =>
       new Promise((resolve) => {
@@ -27,7 +27,7 @@ const makeDebuggee = () => {
           resolve({ targetInfo: { targetId: "GUEST" } });
           return;
         }
-        pending.push(() => resolve({ method }));
+        pending.push((result) => resolve(result ?? { method }));
       }),
   });
   const webContents = {
@@ -41,7 +41,8 @@ const makeDebuggee = () => {
       debugger: debuggee as unknown as Electron.Debugger,
     },
     emit: (method: string, params: unknown) => emitter.emit("message", {}, method, params, ""),
-    release: () => pending.splice(0).forEach((resolve) => resolve()),
+    /** Answers every pending command, with `result` when given. */
+    release: (result?: unknown) => pending.splice(0).forEach((resolve) => resolve(result)),
   };
 };
 
@@ -148,4 +149,100 @@ describe("DesktopBrowserHost", () => {
       expect(host.humanStartedDownload(debuggee.tab.webContents)).toBe(false);
     }),
   );
+
+  describe("agentActivity", () => {
+    const command = (
+      host: DesktopBrowserHost.DesktopBrowserHost["Service"],
+      id: number,
+      method: string,
+    ) =>
+      host.handleCommandLine(
+        encodeJson({
+          type: "cdp",
+          ...key,
+          message: encodeJson({ id, method, params: {}, sessionId: "t3-preview-page" }),
+        }),
+      );
+    const settle = Effect.promise(() => new Promise((resolve) => setImmediate(resolve)));
+    /** Records every activity change the host reports. */
+    const recordActivity = (host: DesktopBrowserHost.DesktopBrowserHost["Service"]) =>
+      Effect.gen(function* () {
+        const seen: Array<boolean> = [];
+        yield* host.agentActivity.pipe(
+          Stream.runForEach(({ active }) => Effect.sync(() => void seen.push(active))),
+          Effect.forkScoped,
+        );
+        yield* Effect.yieldNow;
+        return seen;
+      });
+
+    it.effect("spans an agent's input from the command to its reply", () =>
+      Effect.gen(function* () {
+        const host = yield* DesktopBrowserHost.make;
+        const debuggee = makeDebuggee();
+        host.attach(key, debuggee.tab);
+        const seen = yield* recordActivity(host);
+
+        // Reading the page is not acting on it.
+        yield* command(host, 1, "DOM.getDocument");
+        yield* settle;
+        expect(seen).toEqual([]);
+
+        yield* command(host, 2, "Input.dispatchMouseEvent");
+        yield* command(host, 3, "Runtime.callFunctionOn");
+        yield* settle;
+        expect(seen).toEqual([true]);
+
+        debuggee.release();
+        yield* settle;
+        expect(seen).toEqual([true, false]);
+      }).pipe(Effect.scoped),
+    );
+
+    it.effect("keeps a navigation in flight until its page loads", () =>
+      Effect.gen(function* () {
+        const host = yield* DesktopBrowserHost.make;
+        const debuggee = makeDebuggee();
+        host.attach(key, debuggee.tab);
+        const seen = yield* recordActivity(host);
+
+        yield* command(host, 1, "Page.navigate");
+        debuggee.release({ frameId: "main", loaderId: "loader-1" });
+        yield* settle;
+        // An autofocus on the new page can still take focus.
+        expect(seen).toEqual([true]);
+
+        debuggee.emit("Page.loadEventFired", { timestamp: 1 });
+        yield* settle;
+        expect(seen).toEqual([true, false]);
+      }).pipe(Effect.scoped),
+    );
+
+    it.effect("ends a navigation that never loads with its reply", () =>
+      Effect.gen(function* () {
+        const host = yield* DesktopBrowserHost.make;
+        const debuggee = makeDebuggee();
+        host.attach(key, debuggee.tab);
+        const seen = yield* recordActivity(host);
+
+        yield* command(host, 1, "Page.navigate");
+        debuggee.release({ frameId: "main", loaderId: "loader-1", errorText: "net::ERR_FAILED" });
+        yield* settle;
+        expect(seen).toEqual([true, false]);
+      }).pipe(Effect.scoped),
+    );
+
+    it.effect("ends an action when the server releases the tab mid-command", () =>
+      Effect.gen(function* () {
+        const host = yield* DesktopBrowserHost.make;
+        host.attach(key, makeDebuggee().tab);
+        const seen = yield* recordActivity(host);
+
+        yield* command(host, 1, "Input.insertText");
+        yield* host.handleCommandLine(encodeJson({ type: "release", ...key }));
+        yield* settle;
+        expect(seen).toEqual([true, false]);
+      }).pipe(Effect.scoped),
+    );
+  });
 });

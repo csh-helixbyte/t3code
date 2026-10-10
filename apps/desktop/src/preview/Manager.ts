@@ -10,6 +10,7 @@ import {
   DESKTOP_PREVIEW_RECORDING_CAPTURE_TRIGGER,
 } from "@t3tools/contracts";
 import type {
+  DesktopPreviewAgentActivityEvent,
   DesktopPreviewAnnotationTheme,
   DesktopPreviewColorScheme,
   DesktopPreviewFavicon,
@@ -62,7 +63,11 @@ import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopRendererHistory from "../telemetry/DesktopRendererHistory.ts";
-import { MENU_ACTION_CHANNEL, PREVIEW_PICTURE_IN_PICTURE_FRAME_CHANNEL } from "../ipc/channels.ts";
+import {
+  MENU_ACTION_CHANNEL,
+  PREVIEW_AGENT_ACTIVITY_CHANNEL,
+  PREVIEW_PICTURE_IN_PICTURE_FRAME_CHANNEL,
+} from "../ipc/channels.ts";
 import * as DesktopBrowserHost from "./DesktopBrowserHost.ts";
 import * as PreviewPasskeys from "./Passkeys.ts";
 import * as BrowserSession from "./BrowserSession.ts";
@@ -3368,15 +3373,41 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       { discard: true },
     );
   });
+  /**
+   * Tells the window hosting a server tab when the agent starts and stops
+   * acting on it, so that window can hand keyboard focus back from the page.
+   */
+  const emitAgentActivity = Effect.fn("PreviewManager.emitAgentActivity")(function* (activity: {
+    readonly key: { readonly threadId: string; readonly tabId: string };
+    readonly active: boolean;
+  }) {
+    const tab = [...(yield* SynchronizedRef.get(tabsRef)).values()].find(
+      (candidate) =>
+        candidate.serverTab?.threadId === activity.key.threadId &&
+        candidate.serverTab.tabId === activity.key.tabId,
+    );
+    const webContentsId = tab?.webContentsId;
+    if (!tab || webContentsId == null) return;
+    const event: DesktopPreviewAgentActivityEvent = { tabId: tab.tabId, active: activity.active };
+    yield* attempt({ operation: "agentActivity", tabId: tab.tabId }, () => {
+      const host = webContents.fromId(webContentsId)?.hostWebContents;
+      if (host && !host.isDestroyed()) host.send(PREVIEW_AGENT_ACTIVITY_CHANNEL, event);
+    }).pipe(Effect.ignore);
+  });
   // Listening starts with the first tab of the desktop's own server.
   let pointersStarted = false;
   const listenForAgentPointers = Effect.suspend(() => {
     if (pointersStarted) return Effect.void;
     pointersStarted = true;
-    return browserHost.pointers.pipe(
-      Stream.runForEach(emitAgentPointer),
-      Effect.forkIn(parentScope),
-      Effect.asVoid,
+    return Effect.all(
+      [
+        browserHost.pointers.pipe(Stream.runForEach(emitAgentPointer), Effect.forkIn(parentScope)),
+        browserHost.agentActivity.pipe(
+          Stream.runForEach(emitAgentActivity),
+          Effect.forkIn(parentScope),
+        ),
+      ],
+      { discard: true },
     );
   });
 
