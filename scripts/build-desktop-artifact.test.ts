@@ -53,6 +53,7 @@ import {
   resolveFffNativeDependencies,
   resolveBuildOptions,
   resolveDesktopBuildIconAssets,
+  resolveDesktopAppId,
   resolveDesktopProductName,
   resolveDesktopUpdateChannel,
   resolveDesktopWebAssetBrand,
@@ -277,6 +278,11 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       resolveDesktopProductName("0.0.17-nightly.20260413.42"),
       "HelixByte Code (Nightly)",
     );
+  });
+
+  it("gives nightly builds their own bundle id so they install beside stable", () => {
+    assert.equal(resolveDesktopAppId("0.0.17"), "com.helixbyte.code");
+    assert.equal(resolveDesktopAppId("0.0.17-nightly.20260413.42"), "com.helixbyte.code.nightly");
   });
 
   it("switches desktop packaging icons to the nightly artwork for nightly versions", () => {

@@ -2741,6 +2741,14 @@ export function resolvePackageManagerUserAgent(packageManager: string): string {
   return `${trimmed.slice(0, versionSeparator)}/${trimmed.slice(versionSeparator + 1)}`;
 }
 
+// HelixByte fork: nightly gets its own bundle id so macOS treats it as a separate
+// app installed beside stable (Launch Services, notifications, launchers).
+export function resolveDesktopAppId(version: string): string {
+  return resolveDesktopUpdateChannel(version) === "nightly"
+    ? `${DESKTOP_APP_ID}.nightly`
+    : DESKTOP_APP_ID;
+}
+
 export function resolveDesktopProductName(version: string): string {
   return resolveDesktopUpdateChannel(version) === "nightly"
     ? "HelixByte Code (Nightly)"
@@ -2767,7 +2775,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   arch?: typeof BuildArch.Type,
 ) {
   const buildConfig: Record<string, unknown> = {
-    appId: DESKTOP_APP_ID,
+    appId: resolveDesktopAppId(version),
     productName: resolveDesktopProductName(version),
     artifactName: "HelixByte-Code-${version}-${arch}.${ext}",
     electronLanguages: [...DESKTOP_ELECTRON_LANGUAGES],

@@ -25,6 +25,7 @@ import * as DesktopLifecycle from "./DesktopLifecycle.ts";
 import * as DesktopLinuxUrlHandler from "./DesktopLinuxUrlHandler.ts";
 import * as DesktopObservability from "./DesktopObservability.ts";
 import * as DesktopPreReadyPlatform from "./DesktopPreReadyPlatform.ts";
+import * as DesktopSharedHomeGuard from "./DesktopSharedHomeGuard.ts";
 import * as DesktopShutdown from "./DesktopShutdown.ts";
 import * as DesktopServerExposure from "../backend/DesktopServerExposure.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
@@ -195,6 +196,27 @@ const bootstrap = Effect.gen(function* () {
     if (!(yield* Ref.get(state.quitting))) {
       yield* desktopWindow.createMainIfBackendReady;
     }
+    return;
+  }
+
+  // HelixByte fork: packaged stable and nightly share this state directory, so a
+  // second app quits instead of starting a server beside the first.
+  const runningServer = environment.isDevelopment
+    ? Option.none<DesktopSharedHomeGuard.RunningServer>()
+    : yield* DesktopSharedHomeGuard.findRunningServer(environment.stateDir);
+  if (Option.isSome(runningServer)) {
+    const { pid, port } = runningServer.value;
+    yield* logBootstrapWarning("bootstrap found another server on this state directory", {
+      pid,
+      port,
+    });
+    yield* Ref.set(state.quitting, true);
+    yield* (yield* ElectronDialog.ElectronDialog).showErrorBox(
+      `${environment.displayName} can't start`,
+      `Another HelixByte Code (stable or nightly) is already running on this data:\n${environment.stateDir}\n\nIts server is process ${pid} on port ${port}. Quit that app, then open this one again.`,
+    );
+    yield* (yield* DesktopShutdown.DesktopShutdown).request;
+    yield* (yield* ElectronApp.ElectronApp).quit;
     return;
   }
 
