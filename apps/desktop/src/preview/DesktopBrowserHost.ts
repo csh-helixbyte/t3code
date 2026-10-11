@@ -214,7 +214,7 @@ export const make = Effect.gen(function* () {
     const id = keyOf(key);
     const tab = tabs.get(id);
     if (!tab) return;
-    tab.keyboard.cancel();
+    tab.keyboard.dispose();
     tabs.delete(id);
     tab.debuggee.debugger.off("message", tab.onMessage);
     clearAgentCommands(tab);

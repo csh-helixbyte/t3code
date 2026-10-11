@@ -9,18 +9,45 @@ export function createDesktopBrowserKeyboard(
   let sequence = 0;
   let generation = 0;
   let tail: Promise<unknown> = Promise.resolve();
+  // HelixByte fork: a key such as Enter can submit a form, and the page starts
+  // navigating before its keyup arrives. Scripts sent to the departing document
+  // may never settle, so every renderer call is bounded, and a keyup that
+  // follows a navigation is not waited on.
+  let navigations = 0;
+  let keyDownNavigations = 0;
+  const navigationWaiters = new Set<() => void>();
+  const onNavigation = (
+    details: Electron.Event<Electron.WebContentsDidStartNavigationEventParams>,
+  ): void => {
+    if (details.isSameDocument) return;
+    navigations++;
+    for (const wake of navigationWaiters) wake();
+  };
+  contents.on("did-start-navigation", onNavigation);
+  const bounded = <T>(promise: Promise<T>, message: string): Promise<T> => {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    return Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(message)), 5000);
+      }),
+    ]).finally(() => clearTimeout(timeout));
+  };
 
   const focusedFrame = async () => {
     // Electron's focusedFrame follows native focus and can be null while the
     // desktop owns it. Follow DOM focus instead, including cross-site frames.
     let frame = contents.mainFrame;
     while (true) {
-      const index: unknown = await frame.executeJavaScript(`(() => {
+      const index: unknown = await bounded(
+        frame.executeJavaScript(`(() => {
         let element = document.activeElement;
         while (element?.shadowRoot?.activeElement) element = element.shadowRoot.activeElement;
         if (element?.tagName !== "IFRAME" && element?.tagName !== "FRAME") return -1;
         return Array.from({ length: window.length }, (_, i) => window[i]).indexOf(element.contentWindow);
-      })()`);
+      })()`),
+        "The focused preview frame is unavailable.",
+      );
       if (index === -1) return frame;
       if (typeof index !== "number" || !frame.frames[index]) {
         throw new Error("The focused preview frame is unavailable.");
@@ -42,7 +69,8 @@ export function createDesktopBrowserKeyboard(
     const frame = await focusedFrame();
     const receipt = `__t3KeyboardReceipt${++sequence}`;
     const type = event.type === "keyUp" ? "keyup" : "keydown";
-    await frame.executeJavaScript(`(() => {
+    await bounded(
+      frame.executeJavaScript(`(() => {
       const name = ${JSON.stringify(receipt)};
       const type = ${JSON.stringify(type)};
       let finish;
@@ -79,7 +107,9 @@ export function createDesktopBrowserKeyboard(
       addEventListener(type, listener, true);
       addEventListener("pagehide", pagehide, true);
       globalThis[name] = { promise, dispose: () => done(null) };
-    })()`);
+    })()`),
+      "The preview page did not receive the keyboard event.",
+    );
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
       // CDP's root Input commands can target the embedder's focused renderer.
@@ -112,7 +142,7 @@ export function createDesktopBrowserKeyboard(
     }
   };
 
-  const press = async (params: Record<string, unknown>, checkCurrent: () => void) => {
+  const pressKey = async (params: Record<string, unknown>, checkCurrent: () => void) => {
     const type = params["type"];
     const key = params["key"];
     if (
@@ -245,8 +275,9 @@ export function createDesktopBrowserKeyboard(
         }
       }
       checkCurrent();
-      await frame.executeJavaScript(
-        `(() => {
+      await bounded(
+        frame.executeJavaScript(
+          `(() => {
         for (const command of ${JSON.stringify(commands)}) {
           let element = document.activeElement;
           while (element?.shadowRoot?.activeElement) element = element.shadowRoot.activeElement;
@@ -284,7 +315,9 @@ export function createDesktopBrowserKeyboard(
           }
         }
       })()`,
-        true,
+          true,
+        ),
+        "The preview page did not run the editing command.",
       );
     }
     const text = params["text"];
@@ -293,10 +326,44 @@ export function createDesktopBrowserKeyboard(
     }
   };
 
+  const press = async (params: Record<string, unknown>, checkCurrent: () => void) => {
+    if (params["type"] !== "keyUp") {
+      if (params["type"] === "keyDown" || params["type"] === "rawKeyDown") {
+        keyDownNavigations = navigations;
+      }
+      return pressKey(params, checkCurrent);
+    }
+    // The document that saw the keydown is gone, so there is nothing to confirm.
+    if (navigations !== keyDownNavigations) return;
+    let wake = () => {};
+    const navigated = new Promise<void>((resolve) => {
+      wake = resolve;
+    });
+    navigationWaiters.add(wake);
+    let abandoned = false;
+    const pressed = pressKey(params, () => {
+      checkCurrent();
+      if (abandoned) throw new Error("The preview page navigated.");
+    });
+    pressed.catch(() => {});
+    try {
+      await Promise.race([pressed, navigated]);
+    } catch (error) {
+      if (navigations === keyDownNavigations) throw error;
+    } finally {
+      abandoned = true;
+      navigationWaiters.delete(wake);
+    }
+  };
+
   return {
     isDispatching: () => pending > 0,
     cancel: () => {
       generation++;
+    },
+    dispose: () => {
+      generation++;
+      if (!contents.isDestroyed()) contents.off("did-start-navigation", onNavigation);
     },
     send: (method: string, params: Record<string, unknown>) => {
       pending++;
@@ -313,7 +380,8 @@ export function createDesktopBrowserKeyboard(
           if (text.length > 0) {
             const frame = await focusedFrame();
             checkCurrent();
-            const inserted: unknown = await frame.executeJavaScript(`(() => {
+            const inserted: unknown = await bounded(
+              frame.executeJavaScript(`(() => {
               let element = document.activeElement;
               while (element?.shadowRoot?.activeElement) element = element.shadowRoot.activeElement;
               const text = ${JSON.stringify(text)};
@@ -322,7 +390,9 @@ export function createDesktopBrowserKeyboard(
               if (!(textControl || element?.isContentEditable) || element.disabled || element.readOnly) return false;
               if (!element?.dispatchEvent(new InputEvent("beforeinput", { inputType: "insertText", data: text, bubbles: true, cancelable: true, composed: true }))) return true;
               return document.execCommand("insertText", false, text);
-            })()`);
+            })()`),
+              "The preview page did not accept the text.",
+            );
             if (inserted !== true) throw new Error("The preview page did not accept the text.");
           }
         } else {

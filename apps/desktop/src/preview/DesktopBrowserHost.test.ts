@@ -15,6 +15,11 @@ const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeCdpReply = Schema.decodeUnknownSync(
   Schema.fromJsonString(Schema.Struct({ id: Schema.Number })),
 );
+const decodeCdpResult = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({ id: Schema.Number, error: Schema.optional(Schema.Unknown) }),
+  ),
+);
 const key = { threadId: "thread-1", tabId: "tab-1" };
 
 /** A tab's webContents and debugger, with the debugger's commands left pending until released. */
@@ -31,11 +36,12 @@ const makeDebuggee = () => {
         pending.push((result) => resolve(result ?? { method }));
       }),
   });
-  const webContents = {
+  const webContents = Object.assign(new NodeEvents.EventEmitter(), {
     getURL: () => "http://localhost/",
     getTitle: () => "Page",
     getUserAgent: () => "Electron",
-  };
+    isDestroyed: () => false,
+  });
   return {
     tab: {
       webContents: webContents as unknown as Electron.WebContents,
@@ -152,6 +158,77 @@ describe("DesktopBrowserHost", () => {
       expect(decodeCdpReply((reply as { message: string }).message).id).toBe(3);
       expect(edits).toHaveLength(1);
       expect(edits[0]).toContain("fresh input");
+      expect(host.isDispatchingKeyboard(debuggee.tab.webContents)).toBe(false);
+    }).pipe(Effect.scoped),
+  );
+
+  // HelixByte fork: Enter that submits a form navigates before its keyup lands.
+  it.effect("answers a keyup whose page navigated away instead of waiting on it", () =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.make;
+      const debuggee = makeDebuggee();
+      const keyUpInstalled = Promise.withResolvers<void>();
+      const sent: Array<string> = [];
+      Object.assign(debuggee.tab.webContents, {
+        setIgnoreMenuShortcuts: () => {},
+        sendInputEvent: (event: { type: string }) => sent.push(event.type),
+        mainFrame: {
+          processId: 1,
+          frames: [],
+          detached: false,
+          executeJavaScript: (source: string) => {
+            if (source.includes("indexOf(element.contentWindow)")) return Promise.resolve(-1);
+            if (source.includes('const type = "keyup"')) {
+              keyUpInstalled.resolve();
+              // The departing document never answers.
+              return new Promise(() => {});
+            }
+            if (source.includes("?.promise")) return Promise.resolve({ prevented: false });
+            return Promise.resolve(undefined);
+          },
+        },
+      });
+      const replies = yield* Queue.unbounded<DesktopBrowserEvent>();
+      yield* host.events.pipe(
+        Stream.runForEach((line) =>
+          Queue.offer(replies, decodeEvent(new TextDecoder().decode(line))),
+        ),
+        Effect.forkScoped,
+      );
+      host.attach(key, debuggee.tab);
+      expect(yield* Queue.take(replies)).toEqual({ type: "attached", ...key });
+      const key_ = (id: number, type: string) =>
+        host.handleCommandLine(
+          encodeJson({
+            type: "cdp",
+            ...key,
+            message: encodeJson({
+              id,
+              method: "Input.dispatchKeyEvent",
+              params: { type, key: "Enter", text: "\r" },
+              sessionId: "t3-preview-page",
+            }),
+          }),
+        );
+      yield* key_(1, "keyDown");
+      const down = yield* Queue.take(replies);
+      expect(decodeCdpResult((down as { message: string }).message)).toMatchObject({ id: 1 });
+      yield* key_(2, "keyUp");
+      yield* Effect.promise(() => keyUpInstalled.promise);
+      (debuggee.tab.webContents as unknown as NodeEvents.EventEmitter).emit(
+        "did-start-navigation",
+        { isSameDocument: false },
+      );
+      const up = yield* Queue.take(replies);
+      const result = decodeCdpResult((up as { message: string }).message);
+      expect(result.id).toBe(2);
+      expect(result.error).toBeUndefined();
+      expect(sent).toEqual(["keyDown", "char"]);
+      // The next keyup after that navigation is answered without touching the page.
+      yield* key_(3, "keyUp");
+      const after = decodeCdpResult(((yield* Queue.take(replies)) as { message: string }).message);
+      expect(after).toMatchObject({ id: 3 });
+      expect(after.error).toBeUndefined();
       expect(host.isDispatchingKeyboard(debuggee.tab.webContents)).toBe(false);
     }).pipe(Effect.scoped),
   );
