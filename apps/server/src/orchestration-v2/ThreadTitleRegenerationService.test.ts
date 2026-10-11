@@ -416,6 +416,74 @@ describe("ThreadTitleRegenerationService", () => {
     }),
   );
 
+  // HelixByte fork (bug 0002): a first message that cannot tell the subject.
+  it.effect("marks an initial title that needs refinement for a post-run refresh", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness({
+        generateTitle: () =>
+          Effect.succeed({ title: "Unknown Thread Subject", needsRefinement: true }),
+      });
+      yield* Effect.gen(function* () {
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const titleRegeneration = yield* ThreadTitleRegeneration.ThreadTitleRegenerationService;
+        const threadId = yield* createThread({
+          command: "command:title:refine:create",
+          thread: "thread:title:refine",
+        });
+        yield* dispatchUserMessage({
+          command: "command:title:refine:message",
+          threadId,
+          text: "Reply with exactly: GOLDEN-OK",
+        });
+        const messageId = MessageId.make("command:title:refine:message:message");
+        const requestId = yield* armRegeneration({ command: "command:title:refine:1", threadId });
+
+        yield* titleRegeneration.execute({
+          threadId,
+          requestId,
+          kind: { type: "initial", messageId },
+        });
+
+        const projection = yield* threads.getThreadProjection(threadId);
+        assert.equal(projection.thread.title, "Unknown Thread Subject");
+        assert.equal(projection.thread.titleRefreshMessageId, messageId);
+        assert.isNotOk(projection.thread.titleRegeneration);
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
+  it.effect("ignores needsRefinement on a regeneration", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness({
+        generateTitle: () => Effect.succeed({ title: "Fresh title", needsRefinement: true }),
+      });
+      yield* Effect.gen(function* () {
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const titleRegeneration = yield* ThreadTitleRegeneration.ThreadTitleRegenerationService;
+        const threadId = yield* createThread({
+          command: "command:title:refine-regen:create",
+          thread: "thread:title:refine-regen",
+        });
+        yield* dispatchUserMessage({
+          command: "command:title:refine-regen:message",
+          threadId,
+          text: "Reply with exactly: GOLDEN-OK",
+        });
+        const requestId = yield* armRegeneration({
+          command: "command:title:refine-regen:1",
+          threadId,
+        });
+
+        yield* titleRegeneration.execute({ threadId, requestId, kind: { type: "regenerate" } });
+
+        const projection = yield* threads.getThreadProjection(threadId);
+        assert.equal(projection.thread.title, "Fresh title");
+        assert.isNotOk(projection.thread.titleRefreshMessageId);
+        assert.isNotOk(projection.thread.titleRegeneration);
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
   it.effect("completes without generating when the initial message is unavailable", () =>
     Effect.gen(function* () {
       const harness = makeHarness();

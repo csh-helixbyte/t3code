@@ -23,7 +23,10 @@ import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as Orchestrator from "./Orchestrator.ts";
-import type { ProviderAdapterV2Event, ProviderAdapterV2Shape } from "./ProviderAdapter.ts";
+import type {
+  ProviderAdapterV2,
+  ProviderAdapterV2Event,
+} from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
@@ -43,6 +46,8 @@ const runFirstTurn = Effect.fn("runFirstTurn")(function* (input: {
   readonly ending: "completed" | "interrupted";
   readonly renameDuringRun?: boolean;
   readonly steerRestartDuringRun?: boolean;
+  /** HelixByte fork: when the initial title reports it needs refinement. */
+  readonly refinementReported?: "during-run" | "after-run";
 }) {
   const cwd = yield* checkpointWorkspace(`title-refresh-${input.name}`);
   const events = yield* Queue.unbounded<ProviderAdapterV2Event>();
@@ -50,7 +55,7 @@ const runFirstTurn = Effect.fn("runFirstTurn")(function* (input: {
     string,
     { readonly providerTurn: OrchestrationV2ProviderTurn; readonly runOrdinal: number }
   >();
-  const adapter: ProviderAdapterV2Shape = {
+  const adapter: ProviderAdapterV2["Service"] = {
     instanceId,
     driver,
     getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
@@ -157,6 +162,14 @@ const runFirstTurn = Effect.fn("runFirstTurn")(function* (input: {
     const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
     const outbox = yield* EffectOutbox.EffectOutboxV2;
     const threadId = ThreadId.make(`thread:title-refresh-${input.name}`);
+    const reportRefinement = orchestrator.dispatch({
+      type: "thread.title.regeneration.complete",
+      commandId: CommandId.make("first:title-complete"),
+      threadId,
+      requestId: CommandId.make("first"),
+      title: "Unknown Thread Subject",
+      refreshAfterMessageId: firstMessageId,
+    });
     const watch = (predicate: (event: OrchestrationV2DomainEvent) => boolean) =>
       orchestrator.streamDomainEvents.pipe(
         Stream.filter(predicate),
@@ -221,6 +234,9 @@ const runFirstTurn = Effect.fn("runFirstTurn")(function* (input: {
       yield* worker.drain();
       yield* Fiber.join(restarted);
     }
+    if (input.refinementReported === "during-run") {
+      yield* reportRefinement;
+    }
     if (input.renameDuringRun === true) {
       yield* orchestrator.dispatch({
         type: "thread.metadata.update",
@@ -279,6 +295,9 @@ const runFirstTurn = Effect.fn("runFirstTurn")(function* (input: {
     yield* Fiber.join(ended);
     yield* worker.drain();
     yield* Fiber.join(followUpStarted);
+    if (input.refinementReported === "after-run") {
+      yield* reportRefinement;
+    }
 
     const refreshCommandId = CommandId.make(`command:system:title-refresh:${firstRun.id}`);
     return {
@@ -288,6 +307,9 @@ const runFirstTurn = Effect.fn("runFirstTurn")(function* (input: {
       refreshEffects: (yield* outbox.listByCommandId(refreshCommandId)).map(
         (effect) => effect.request,
       ),
+      titleCompleteEffects: (yield* outbox.listByCommandId(
+        CommandId.make("first:title-complete"),
+      )).map((effect) => effect.request),
     };
   }).pipe(Effect.provide(layer));
 });
@@ -375,6 +397,65 @@ describe("first-run title refresh", () => {
         });
         assert.isNull(result.thread.titleRefreshMessageId);
         assert.equal(result.thread.titleRegeneration?.requestId, CommandId.make("first"));
+        assert.deepEqual(result.refreshEffects, []);
+      }),
+    ),
+  );
+
+  // HelixByte fork (bug 0002): a content-free first message such as
+  // "Reply with exactly: OK" gets an initial title flagged needsRefinement.
+  it.effect("regenerates after the first run when the initial title needs refinement", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const result = yield* runFirstTurn({
+          name: "refine-during-run",
+          text: "Reply with exactly: GOLDEN-OK",
+          ending: "completed",
+          refinementReported: "during-run",
+        });
+        assert.isUndefined(result.markerAfterDispatch);
+        assert.isNull(result.thread.titleRefreshMessageId);
+        assert.equal(result.thread.titleRegeneration?.requestId, result.refreshCommandId);
+        assert.deepEqual(result.refreshEffects, [
+          { type: "thread-title.generate", kind: { type: "regenerate" } },
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("regenerates at once when the refinement arrives after the first run", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const result = yield* runFirstTurn({
+          name: "refine-after-run",
+          text: "Reply with exactly: GOLDEN-OK",
+          ending: "completed",
+          refinementReported: "after-run",
+        });
+        assert.equal(result.thread.title, "Unknown Thread Subject");
+        assert.isUndefined(result.thread.titleRefreshMessageId);
+        assert.equal(
+          result.thread.titleRegeneration?.requestId,
+          CommandId.make("first:title-complete"),
+        );
+        assert.deepEqual(result.titleCompleteEffects, [
+          { type: "thread-title.generate", kind: { type: "regenerate" } },
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("does not refine after an interrupted first run", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const result = yield* runFirstTurn({
+          name: "refine-interrupted",
+          text: "Reply with exactly: GOLDEN-OK",
+          ending: "interrupted",
+          refinementReported: "during-run",
+        });
+        assert.isNull(result.thread.titleRefreshMessageId);
+        assert.isNull(result.thread.titleRegeneration);
         assert.deepEqual(result.refreshEffects, []);
       }),
     ),

@@ -48,6 +48,7 @@ const make = Effect.gen(function* () {
     readonly threadId: ThreadId;
     readonly requestId: CommandId;
     readonly title?: string;
+    readonly refreshAfterMessageId?: MessageId;
   }) =>
     threads
       .dispatch({
@@ -56,6 +57,9 @@ const make = Effect.gen(function* () {
         threadId: input.threadId,
         requestId: input.requestId,
         ...(input.title === undefined ? {} : { title: input.title }),
+        ...(input.refreshAfterMessageId === undefined
+          ? {}
+          : { refreshAfterMessageId: input.refreshAfterMessageId }),
       })
       .pipe(Effect.asVoid);
 
@@ -64,7 +68,11 @@ const make = Effect.gen(function* () {
   )(function* (input) {
     const outcome:
       | { readonly type: "stale" }
-      | { readonly type: "complete"; readonly title?: string } = yield* Effect.gen(function* () {
+      | {
+          readonly type: "complete";
+          readonly title?: string;
+          readonly refreshAfterMessageId?: MessageId;
+        } = yield* Effect.gen(function* () {
       const projection = yield* threads.getThreadRecords(
         input.threadId,
         ["messages"],
@@ -115,10 +123,17 @@ const make = Effect.gen(function* () {
         modelSelection: settings.textGenerationModelSelection,
       });
       const generatedTitle = result.title.trim();
+      // HelixByte fork: when the first message alone cannot tell the subject
+      // (such as "Reply with exactly: OK"), the model flags needsRefinement and
+      // the title is regenerated from the conversation after the first run.
+      const refresh =
+        input.kind.type === "initial" && result.needsRefinement === true
+          ? { refreshAfterMessageId: input.kind.messageId }
+          : {};
       return generatedTitle === "New thread" ||
         (input.kind.type === "regenerate" && generatedTitle === projection.thread.title.trim())
-        ? { type: "complete" as const }
-        : { type: "complete" as const, title: result.title };
+        ? { type: "complete" as const, ...refresh }
+        : { type: "complete" as const, title: result.title, ...refresh };
     }).pipe(
       Effect.retry({
         times: input.kind.type === "initial" ? 2 : 0,
@@ -141,6 +156,9 @@ const make = Effect.gen(function* () {
     yield* complete({
       ...input,
       ...(outcome.title === undefined ? {} : { title: outcome.title }),
+      ...(outcome.refreshAfterMessageId === undefined
+        ? {}
+        : { refreshAfterMessageId: outcome.refreshAfterMessageId }),
     });
   });
 

@@ -2801,6 +2801,31 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
       markUnreadVisitedAt = DateTime.subtract(latestRunCompletedAt, { milliseconds: 1 });
     }
+    // HelixByte fork: an initial title that needs refinement is regenerated
+    // after the first message's run completes. A run still in flight is marked
+    // for refreshTitleAfterFirstRun; one that already completed regenerates now.
+    let initialTitleRefresh: "none" | "mark" | "regenerate" = "none";
+    if (
+      command.type === "thread.title.regeneration.complete" &&
+      command.refreshAfterMessageId !== undefined &&
+      thread.titleRegeneration?.requestId === command.requestId
+    ) {
+      const { messages } = yield* loadProjectionForCommand(command, ["messages"], {
+        messageIds: [command.refreshAfterMessageId],
+      });
+      const runId = messages[0]?.runId ?? null;
+      const { runs } =
+        runId === null
+          ? { runs: [] }
+          : yield* loadProjectionForCommand(command, ["runs"], { runIds: [runId] });
+      const run = runs.find((candidate) => candidate.id === runId);
+      initialTitleRefresh =
+        run === undefined || run.status === "queued" || isBlockingRun(run)
+          ? "mark"
+          : run.status === "completed"
+            ? "regenerate"
+            : "none";
+    }
     const updatedThread: OrchestrationV2AppThread = (() => {
       switch (command.type) {
         case "thread.archive":
@@ -3199,7 +3224,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ? {
                 ...thread,
                 ...(command.title === undefined ? {} : { title: command.title }),
-                titleRegeneration: null,
+                titleRegeneration:
+                  initialTitleRefresh === "regenerate"
+                    ? { requestId: command.commandId, startedAt: now }
+                    : null,
+                ...(initialTitleRefresh === "mark"
+                  ? { titleRefreshMessageId: command.refreshAfterMessageId }
+                  : {}),
                 updatedAt: now,
               }
             : thread;
@@ -3276,7 +3307,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       payload: updatedThread,
     });
 
-    if (command.type === "thread.metadata.update" && command.regenerateTitle === true) {
+    if (
+      (command.type === "thread.metadata.update" && command.regenerateTitle === true) ||
+      initialTitleRefresh === "regenerate"
+    ) {
       yield* Ref.update(effects, (existing) => [
         ...existing,
         pendingThreadTitleGenerationEffect(command.commandId, command.threadId, {

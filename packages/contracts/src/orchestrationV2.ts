@@ -2821,6 +2821,11 @@ export const OrchestrationV2Command = Schema.Union([
     threadId: ThreadId,
     requestId: CommandId,
     title: Schema.optional(TrimmedNonEmptyString),
+    /**
+     * HelixByte fork: the initial title could not tell the subject from this
+     * first message, so the title is regenerated once its run completes.
+     */
+    refreshAfterMessageId: Schema.optional(MessageId),
   }),
   Schema.Struct({
     type: Schema.Literal("thread.runtime-mode.set"),
