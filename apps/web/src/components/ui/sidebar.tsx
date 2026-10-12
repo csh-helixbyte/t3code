@@ -33,12 +33,15 @@ const SIDEBAR_RESIZE_DEFAULT_MIN_WIDTH = 16 * 16;
 const SIDEBAR_PEEK_CLOSE_DELAY_MS = 150;
 const SIDEBAR_PEEK_ENTER_EASING = "cubic-bezier(0.32, 0.72, 0, 1)";
 const SIDEBAR_PEEK_EXIT_EASING = "cubic-bezier(0.4, 0, 1, 1)";
+const SIDEBAR_TITLEBAR_CONTROL_SIZE = "max-sm:[--workspace-titlebar-control-size:--spacing(8)]";
 
 type SidebarContextProps = {
   state: ResponsiveSidebarState;
   open: boolean;
   setOpen: (open: boolean) => void;
   openMobile: boolean;
+  mobileSheetMounted: boolean;
+  setMobileSheetElement: (element: HTMLDivElement | null) => void;
   setOpenMobile: (open: boolean) => void;
   isMobile: boolean;
   toggleSidebar: () => void;
@@ -117,6 +120,10 @@ function SidebarProvider({
 }) {
   const isMobile = useIsMobile();
   const [openMobile, setOpenMobile] = React.useState(false);
+  const [mobileSheetMounted, setMobileSheetMounted] = React.useState(false);
+  const setMobileSheetElement = React.useCallback((element: HTMLDivElement | null) => {
+    setMobileSheetMounted(element !== null);
+  }, []);
 
   // This is the internal state of the sidebar.
   // We use openProp and setOpenProp for control from outside the component.
@@ -193,12 +200,25 @@ function SidebarProvider({
       openMobile,
       peekHandlers,
       peeking,
+      mobileSheetMounted,
+      setMobileSheetElement,
       setOpen,
       setOpenMobile,
       state,
       toggleSidebar,
     }),
-    [state, open, setOpen, isMobile, openMobile, toggleSidebar, peeking, peekHandlers],
+    [
+      state,
+      open,
+      setOpen,
+      isMobile,
+      openMobile,
+      mobileSheetMounted,
+      setMobileSheetElement,
+      toggleSidebar,
+      peeking,
+      peekHandlers,
+    ],
   );
 
   return (
@@ -206,7 +226,8 @@ function SidebarProvider({
       <div
         // Inset layouts opt into bg-sidebar through className.
         className={cn(
-          "group/sidebar-wrapper flex min-h-svh w-full max-sm:[--workspace-titlebar-control-size:--spacing(8)]",
+          "group/sidebar-wrapper flex min-h-svh w-full",
+          SIDEBAR_TITLEBAR_CONTROL_SIZE,
           className,
         )}
         data-sidebar-state={state}
@@ -242,7 +263,15 @@ function Sidebar({
   collapsible?: "offcanvas" | "icon" | "none";
   resizable?: boolean | SidebarResizableOptions;
 }) {
-  const { isMobile, state, openMobile, setOpenMobile, peeking, peekHandlers } = useSidebar();
+  const {
+    isMobile,
+    state,
+    openMobile,
+    setOpenMobile,
+    setMobileSheetElement,
+    peeking,
+    peekHandlers,
+  } = useSidebar();
   const resolvedResizable = React.useMemo<SidebarResolvedResizableOptions | null>(() => {
     if (isMobile || collapsible === "none" || !resizable) {
       return null;
@@ -299,6 +328,7 @@ function Sidebar({
       <SidebarInstanceContext value={instanceContextValue}>
         <Sheet onOpenChange={setOpenMobile} open={openMobile}>
           <SheetPopup
+            ref={setMobileSheetElement}
             className={cn(
               "w-(--sidebar-width) max-w-none bg-sidebar surface-grain p-0 text-sidebar-foreground",
               className,
@@ -321,6 +351,7 @@ function Sidebar({
             <div
               className={cn(
                 "flex h-full w-full flex-col pb-safe pt-safe",
+                SIDEBAR_TITLEBAR_CONTROL_SIZE,
                 side === "left" ? "pl-safe" : "pr-safe",
               )}
               {...props}
