@@ -28,7 +28,6 @@ export {
 } from "@t3tools/client-runtime/work-log/presentation";
 import {
   deriveRevertTurnCountByUserMessageId,
-  formatDuration,
   isStreamingMessageTextUpdate,
   isStreamingTurnItemTextUpdate,
   timelineEntryIsPersistentResourceCard,
@@ -480,23 +479,6 @@ export function resolveTimelineMinimapInteractiveWidth(
   return expanded ? TIMELINE_MINIMAP_EXPANDED_HIT_STRIP_WIDTH : collapsedWidth;
 }
 
-function computeElapsedMs(startIso: string, endIso: string): number | null {
-  const start = Date.parse(startIso);
-  const end = Date.parse(endIso);
-  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
-  return Math.max(0, end - start);
-}
-
-function maxIsoTimestamp(a: string | null, b: string | null): string | null {
-  if (a === null) return b;
-  if (b === null) return a;
-  const aMs = Date.parse(a);
-  const bMs = Date.parse(b);
-  if (!Number.isFinite(aMs)) return b;
-  if (!Number.isFinite(bMs)) return a;
-  return bMs > aMs ? b : a;
-}
-
 export interface TimelineDurationMessage {
   id: string;
   role: "user" | "assistant" | "system";
@@ -911,24 +893,6 @@ function liveSubagentCardEntryIds(entries: ReadonlyArray<TimelineEntry>): Readon
   return visible;
 }
 
-/** `runlessKey` stands in for the run of entries that have none. */
-function timelineEntryFoldRunId(entry: TimelineEntry, runlessKey: RunId | null): RunId | null {
-  if (entry.kind === "work" && entry.entry.itemType === "system_notice") return null;
-  if (entry.kind === "message" && entry.message.role === "assistant") {
-    return entry.message.runId ?? runlessKey;
-  }
-  if (entry.kind === "work") {
-    return entry.entry.runId ?? runlessKey;
-  }
-  if (
-    entry.kind === "event" &&
-    (timelineEntryIsPersistentResourceCard(entry) || entry.projectedItem.item.type === "subagent")
-  ) {
-    return entry.projectedItem.item.runId ?? runlessKey;
-  }
-  return null;
-}
-
 /** A steer adds input to its existing turn, without creating a new header. */
 function timelineEntryStartsResponse(entry: TimelineEntry): boolean {
   return (
@@ -1005,13 +969,12 @@ function failedTimelineRunIds(
 }
 
 /**
- * Settled turns fold activity before their terminal assistant message behind
- * a "Worked for ..." row. Ordinary trailing work joins the fold, while failures
- * and work still in progress stay visible. A prompt without a run (a
- * provider-native subagent, or a turn imported from V1) folds its response
- * the same way.
+ * Settled turns stay as they ran: messages and tool groups keep their place
+ * instead of folding behind a "Worked for ..." row, so finishing a turn neither
+ * hides the agent's work nor shrinks the list under the reader. The fold row,
+ * its expansion state and find/citation reveal stay wired for upstream merges.
  */
-function deriveTurnFolds(input: {
+function deriveTurnFolds(_input: {
   timelineEntries: ReadonlyArray<TimelineEntry>;
   terminalAssistantMessageIds: ReadonlySet<string>;
   latestRun: TimelineLatestRun | null;
@@ -1022,181 +985,7 @@ function deriveTurnFolds(input: {
   /** Finished replies a steer superseded; they answer their prompt, so they stay out. */
   completeSupersededReplyEntryIds: ReadonlySet<string>;
 }): ReadonlyMap<string, TurnFold> {
-  const interruptedRunIds = new Set<RunId>();
-  for (const entry of input.timelineEntries) {
-    if (
-      entry.kind === "event" &&
-      entry.projectedItem.item.runId !== null &&
-      (entry.projectedItem.item.type === "run_interrupt_request" ||
-        entry.projectedItem.item.type === "run_interrupt_result")
-    ) {
-      interruptedRunIds.add(entry.projectedItem.item.runId);
-    }
-  }
-
-  interface TurnGroup {
-    entries: Array<TimelineEntry>;
-    terminalEntry: Extract<TimelineEntry, { kind: "message" }> | null;
-    hasStreamingMessage: boolean;
-    /**
-     * The user message or notification that kicked the turn off. Entry timestamps alone
-     * undercount the duration (the first entry appears only once the
-     * provider starts producing output), and a turn cut short by a steer may
-     * hold a single instantaneous commentary message.
-     */
-    startBoundary: string | null;
-    anchorEntryId: string;
-  }
-  const groupsByRunId = new Map<RunId, TurnGroup>();
-  const runlessFailedKeys = new Set<RunId>();
-
-  // Fold state is keyed by run, so each runless prompt lends its response a
-  // stable key of its own. Decide per prompt, not per thread: a V1 thread's
-  // first V2 run must not unfold every imported turn above it.
-  let runlessKey: RunId | null = null;
-  let pendingBoundary: { createdAt: string; anchorEntryId: string } | null = null;
-  for (const [index, entry] of input.timelineEntries.entries()) {
-    if (timelineEntryStartsResponse(entry)) {
-      const nextEntry = input.timelineEntries[index + 1];
-      pendingBoundary = nextEntry
-        ? { createdAt: entry.createdAt, anchorEntryId: nextEntry.id }
-        : null;
-      const boundaryRunId =
-        entry.kind === "message"
-          ? entry.message.runId
-          : entry.kind === "work"
-            ? entry.entry.runId
-            : null;
-      runlessKey = boundaryRunId == null ? RunId.make(`runless:${entry.id}`) : null;
-      continue;
-    }
-    const runId = timelineEntryFoldRunId(entry, runlessKey);
-    if (!runId) {
-      continue;
-    }
-    if (runId === runlessKey && timelineEntryFailedItem(entry) !== null) {
-      runlessFailedKeys.add(runId);
-    }
-    let group = groupsByRunId.get(runId);
-    if (!group) {
-      group = {
-        entries: [],
-        terminalEntry: null,
-        hasStreamingMessage: false,
-        // Each user boundary starts at most one turn; a second turn after the
-        // same user message (e.g. a steer-superseded continuation) falls back
-        // to its own first entry.
-        startBoundary: pendingBoundary?.createdAt ?? null,
-        anchorEntryId: pendingBoundary?.anchorEntryId ?? entry.id,
-      };
-      pendingBoundary = null;
-      groupsByRunId.set(runId, group);
-    }
-    group.entries.push(entry);
-    if (entry.kind === "message") {
-      if (input.terminalAssistantMessageIds.has(entry.message.id)) {
-        group.terminalEntry = entry;
-      }
-      if (entry.message.streaming) {
-        group.hasStreamingMessage = true;
-      }
-    }
-  }
-
-  const foldsByAnchorEntryId = new Map<string, TurnFold>();
-  for (const [runId, group] of groupsByRunId) {
-    if (
-      input.unfoldedRunIds.has(runId) ||
-      interruptedRunIds.has(runId) ||
-      runlessFailedKeys.has(runId) ||
-      (input.runlessWorkActive && runId === runlessKey)
-    ) {
-      continue;
-    }
-    if (group.hasStreamingMessage) {
-      continue;
-    }
-    const hiddenEntryIds = new Set<string>();
-    const terminalEntryIndex = group.terminalEntry
-      ? group.entries.findIndex((entry) => entry.id === group.terminalEntry?.id)
-      : group.entries.length;
-    for (const [index, entry] of group.entries.entries()) {
-      if (entry.id === group.terminalEntry?.id) {
-        continue;
-      }
-      const isCompaction =
-        entry.kind === "work" && entry.entry.sourceActivityKind === "context-compaction";
-      const isFoldableTrailingActivity =
-        entry.kind === "work" &&
-        entry.entry.toolLifecycleStatus !== "inProgress" &&
-        !workEntryDisplayIndicatesToolFailure(entry.entry);
-      if (!isCompaction && index > terminalEntryIndex && !isFoldableTrailingActivity) {
-        continue;
-      }
-      // Linked resources and still-working children can outlive their
-      // launching run and stay visible after the surrounding work folds.
-      if (
-        timelineEntryIsPersistentResourceCard(entry) ||
-        input.liveSubagentEntryIds.has(entry.id) ||
-        input.completeSupersededReplyEntryIds.has(entry.id)
-      ) {
-        continue;
-      }
-      if (entry.kind === "work" && entry.entry.itemType === "notification") continue;
-      hiddenEntryIds.add(entry.id);
-    }
-    if (hiddenEntryIds.size === 0) {
-      continue;
-    }
-    // A lone compaction row stays visible on its own; it only folds away as
-    // part of a turn that already folds other work.
-    const hidesNonCompactionWork = group.entries.some(
-      (entry) =>
-        hiddenEntryIds.has(entry.id) &&
-        !(entry.kind === "work" && entry.entry.sourceActivityKind === "context-compaction"),
-    );
-    if (!hidesNonCompactionWork) {
-      continue;
-    }
-
-    const firstEntry = group.entries[0];
-    const lastEntry = group.entries.at(-1);
-    if (!firstEntry || !lastEntry) {
-      continue;
-    }
-
-    const isLatestInterruptedTurn =
-      input.latestRun?.runId === runId && input.latestRun.status === "interrupted";
-    // A turn cut short by a steer leaves trailing work entries behind its
-    // terminal message — take whichever ended last.
-    const lastEntryEnd =
-      lastEntry.kind === "message" ? lastEntry.message.updatedAt : lastEntry.createdAt;
-    const elapsedMs =
-      input.latestRun?.runId === runId && input.latestRun.startedAt && input.latestRun.completedAt
-        ? computeElapsedMs(input.latestRun.startedAt, input.latestRun.completedAt)
-        : computeElapsedMs(
-            group.startBoundary ?? firstEntry.createdAt,
-            maxIsoTimestamp(group.terminalEntry?.message.updatedAt ?? null, lastEntryEnd) ??
-              lastEntryEnd,
-          );
-    const duration = elapsedMs !== null ? formatDuration(elapsedMs) : null;
-    const label = isLatestInterruptedTurn
-      ? duration
-        ? `You stopped after ${duration}`
-        : "You stopped this response"
-      : duration
-        ? `Worked for ${duration}`
-        : "Worked";
-
-    foldsByAnchorEntryId.set(group.anchorEntryId, {
-      runId,
-      anchorEntryId: group.anchorEntryId,
-      createdAt: group.startBoundary ?? firstEntry.createdAt,
-      hiddenEntryIds,
-      label,
-    });
-  }
-  return foldsByAnchorEntryId;
+  return new Map();
 }
 
 /**

@@ -1643,49 +1643,6 @@ describe("MessagesTimeline", () => {
     expect(markup.indexOf("Steer")).toBeLessThan(markup.indexOf("Adjust the current turn"));
   });
 
-  it("keeps compact spacing below a collapsed turn divider", () => {
-    const runId = RunId.make("run-collapsed-spacing");
-    const markup = renderToStaticMarkup(
-      <MessagesTimeline
-        {...buildProps()}
-        timelineEntries={[
-          buildUserTimelineEntry("Investigate spacing"),
-          {
-            id: "assistant-commentary-spacing",
-            kind: "message",
-            createdAt: "2026-03-17T19:12:30.000Z",
-            message: {
-              id: MessageId.make("assistant-commentary-spacing"),
-              role: "assistant",
-              text: "Checking the layout.",
-              runId,
-              createdAt: "2026-03-17T19:12:30.000Z",
-              updatedAt: "2026-03-17T19:12:31.000Z",
-              streaming: false,
-            },
-          },
-          {
-            id: "assistant-final-spacing",
-            kind: "message",
-            createdAt: "2026-03-17T19:12:32.000Z",
-            message: {
-              id: MessageId.make("assistant-final-spacing"),
-              role: "assistant",
-              text: "Spacing fixed.",
-              runId,
-              createdAt: "2026-03-17T19:12:32.000Z",
-              updatedAt: "2026-03-17T19:12:33.000Z",
-              streaming: false,
-            },
-          },
-        ]}
-      />,
-    );
-
-    expect(markup).toContain('class="pb-1.5" data-timeline-row-id="turn-fold:');
-    expect(markup).toContain('data-timeline-row-kind="turn-fold"');
-  });
-
   it("shows a collapsed disclosure for superseded attempt output", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const runId = RunId.make("run-steered");

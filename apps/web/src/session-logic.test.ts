@@ -1283,7 +1283,7 @@ describe("HTML renders in the timeline", () => {
       optimisticMessages: [],
     });
   };
-  const rowsFor = (entries: TimelineEntry[], expanded: boolean) =>
+  const rowsFor = (entries: TimelineEntry[]) =>
     deriveMessagesTimelineRows({
       timelineEntries: entries,
       latestRun: {
@@ -1292,14 +1292,13 @@ describe("HTML renders in the timeline", () => {
         startedAt: DateTime.formatIso(at(0)),
         completedAt: DateTime.formatIso(at(5)),
       },
-      ...(expanded ? { expandedRunIds: new Set([runId]) } : {}),
       isWorking: false,
       activeTurnStartedAt: null,
       turnDiffSummaries: [],
       supportsConversationRollback: false,
     }).map((row) => row.kind);
 
-  it("shows a completed render in place, above the reply, through the turn fold", () => {
+  it("shows a completed render in place, between its work and above the reply", () => {
     const entries = turn(
       renderCall("completed", { structuredContent: { htmlRender }, content: [] }),
     );
@@ -1308,15 +1307,7 @@ describe("HTML renders in the timeline", () => {
       runId,
       htmlRender,
     });
-    expect(rowsFor(entries, false)).toEqual(["message", "turn-fold", "html-render", "message"]);
-    expect(rowsFor(entries, true)).toEqual([
-      "message",
-      "turn-fold",
-      "work",
-      "html-render",
-      "work",
-      "message",
-    ]);
+    expect(rowsFor(entries)).toEqual(["message", "work", "html-render", "work", "message"]);
   });
 
   it("hosts a captured MCP app in place, from any provider's tool", () => {
@@ -1335,7 +1326,7 @@ describe("HTML renders in the timeline", () => {
       itemId: "render",
       mcpApp,
     });
-    expect(rowsFor(entries, false)).toEqual(["message", "turn-fold", "mcp-app", "message"]);
+    expect(rowsFor(entries)).toEqual(["message", "work", "mcp-app", "work", "message"]);
   });
 
   it("keeps a render visible when its superseded attempt folds", () => {
@@ -1357,7 +1348,7 @@ describe("HTML renders in the timeline", () => {
     ).map((entry) =>
       entry.kind === "message" && entry.message.role === "user" ? entry : { ...entry, attempt },
     );
-    expect(rowsFor(entries, true)).toEqual(["message", "turn-fold", "attempt-fold", "html-render"]);
+    expect(rowsFor(entries)).toEqual(["message", "attempt-fold", "html-render"]);
   });
 
   it.each([
