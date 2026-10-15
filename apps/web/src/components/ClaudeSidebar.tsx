@@ -288,7 +288,18 @@ function ThreadRowBody(props: ThreadRowBodyProps) {
           onCancel={() => props.onRenameCancel?.()}
         />
       ) : (
-        <span className="min-w-0 flex-1 truncate">{thread.title}</span>
+        // Titles truncate in the narrow sidebar, so the full one shows at once
+        // beside it on hover.
+        <Tooltip>
+          <TooltipTrigger
+            delay={0}
+            closeDelay={0}
+            render={<span className="min-w-0 flex-1 truncate">{thread.title}</span>}
+          />
+          <TooltipPopup side="right" sideOffset={12}>
+            {thread.title}
+          </TooltipPopup>
+        </Tooltip>
       )}
       {props.place ? (
         <span
