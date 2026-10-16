@@ -167,7 +167,7 @@ export class EnvironmentRegistry extends Context.Service<
     readonly setCompatibility: (
       environmentId: EnvironmentId,
       error: ConnectionBlockedError | null,
-    ) => Effect.Effect<void, Persistence.ConnectionPersistenceError>;
+    ) => Effect.Effect<void>;
     readonly state: (
       environmentId: EnvironmentId,
     ) => Effect.Effect<SupervisorConnectionState, EnvironmentNotRegisteredError>;
@@ -384,14 +384,7 @@ export const make = Effect.gen(function* () {
           yield* SubscriptionRef.changes(supervisor.state).pipe(
             Stream.runForEach((state) =>
               state.phase === "blocked" && state.lastFailure?.reason === "unsupported"
-                ? setCompatibility(environmentId, state.lastFailure).pipe(
-                    Effect.catch((error) =>
-                      Effect.logWarning("Could not disable an unsupported environment.", {
-                        environmentId,
-                        error,
-                      }),
-                    ),
-                  )
+                ? setCompatibility(environmentId, state.lastFailure)
                 : Effect.void,
             ),
             Effect.forkIn(scope),
@@ -1132,6 +1125,12 @@ export const make = Effect.gen(function* () {
           serverUpdateRequired: _previousUpdateRequired,
           ...rest
         } = entry;
+        // Unsupported is a fact about this client and that server right now,
+        // not the user's switch, so it stays in memory. Clients of different
+        // protocol versions can share one saved catalog (a stable and a
+        // nightly app on one T3 home); persisting it would switch the
+        // environment off for the client that can still reach it. The next
+        // launch probes once and lands back here if it is still unsupported.
         const next: ConnectionCatalogEntry =
           error === null
             ? rest
@@ -1141,13 +1140,6 @@ export const make = Effect.gen(function* () {
                 unsupportedReason: error.message,
                 ...(error.serverUpdateRequired === true ? { serverUpdateRequired: true } : {}),
               };
-        if (
-          error !== null &&
-          entry.enabled &&
-          !(yield* Ref.get(platformEnvironmentIds)).has(environmentId)
-        ) {
-          yield* registrations.setEnabled(environmentId, false);
-        }
         const lease = (yield* SubscriptionRef.get(serviceScopes)).get(environmentId);
         if (lease !== undefined) {
           yield* SubscriptionRef.update(serviceScopes, (current) =>

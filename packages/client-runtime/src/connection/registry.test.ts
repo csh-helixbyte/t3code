@@ -1015,7 +1015,7 @@ describe("EnvironmentRegistry", () => {
     }),
   );
 
-  it.effect("a socket preflight rejection persists the connection as switched off", () =>
+  it.effect("a socket preflight rejection switches the connection off for this launch only", () =>
     Effect.gen(function* () {
       const error = new ConnectionBlockedError({
         reason: "unsupported",
@@ -1030,12 +1030,21 @@ describe("EnvironmentRegistry", () => {
           Stream.take(1),
           Stream.runDrain,
         );
-        expect((yield* Ref.get(harness.storedDisabled)).has(RELAY_TARGET.environmentId)).toBe(true);
         expect(
           (yield* SubscriptionRef.get(registry.entries)).get(RELAY_TARGET.environmentId)
             ?.unsupportedReason,
         ).toBe(error.message);
         expect(yield* Ref.get(harness.sessions)).toHaveLength(0);
+      }).pipe(Effect.provide(harness.layer));
+
+      // Another client sharing this catalog (or this one, relaunched) must not
+      // find the environment switched off: only the user's switch persists.
+      expect((yield* Ref.get(harness.storedDisabled)).has(RELAY_TARGET.environmentId)).toBe(false);
+      yield* Effect.gen(function* () {
+        const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+        expect(
+          (yield* SubscriptionRef.get(registry.entries)).get(RELAY_TARGET.environmentId),
+        ).toMatchObject({ enabled: true });
       }).pipe(Effect.provide(harness.layer));
     }),
   );

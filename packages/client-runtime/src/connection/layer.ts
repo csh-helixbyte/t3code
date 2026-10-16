@@ -62,11 +62,7 @@ export const watchDiscoveredCompatibility = Effect.fn("connection.watchDiscovere
             if (error !== null || fresh) yield* registry.setCompatibility(environmentId, error);
             seenChecks.set(environmentId, status);
           }
-        }).pipe(
-          Effect.catch((error) =>
-            Effect.logWarning("Could not apply discovered environment compatibility.", { error }),
-          ),
-        ),
+        }),
       ),
     );
   },
