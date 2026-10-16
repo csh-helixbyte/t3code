@@ -1267,7 +1267,21 @@ export function claudeTranscriptTaskNotifications(
 }
 
 // Claude 5.1 and later return the text written ahead of a tool call as a
-// thinking block, at most one per call, instead of a text block.
+// thinking block, at most one per call, instead of a text block. Summarized
+// display makes it look like reasoning, so only a short, single-paragraph
+// second of two thinking blocks right before a tool call is treated as that
+// text; anything else stays a Thought.
+const CLAUDE_THINKING_UPDATE_MAX_LENGTH = 280;
+
+function isClaudeThinkingUpdate(text: string): boolean {
+  const trimmed = text.trim();
+  return (
+    trimmed.length > 0 &&
+    trimmed.length <= CLAUDE_THINKING_UPDATE_MAX_LENGTH &&
+    !/\n\s*\n/u.test(trimmed)
+  );
+}
+
 function claudeWritesUpdatesAsThinking(model: string): boolean {
   const match = /claude-[a-z]+-(\d+)(?:-(\d{1,2}))?(?!\d)/u.exec(model);
   if (match === null) return false;
@@ -3032,6 +3046,7 @@ interface ActiveClaudeTurnContext {
       readonly messageId: string;
       readonly itemId: string;
       readonly text: string;
+      readonly followsThinking: boolean;
     } | null;
     readonly blocks: Map<
       string,
@@ -7018,7 +7033,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 }
                 if (
                   block.type === "tool_use" &&
-                  update?.messageId === message.message.id &&
+                  update !== null &&
+                  update.messageId === message.message.id &&
+                  update.followsThinking &&
+                  isClaudeThinkingUpdate(update.text) &&
                   claudeWritesUpdatesAsThinking(message.message.model)
                 ) {
                   // Same item ID, so the update replaces the Thought in place.
@@ -7035,14 +7053,20 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               const itemId = `${message.message.id}:thinking:${index}`;
               yield* ensureReasoningBlock(context, itemId);
               const finalText = block.thinking || context.reasoning.blocks.get(itemId)?.text;
-              yield* reasoningDeltas.complete({
+              const completedText = yield* reasoningDeltas.complete({
                 turnId: context.nativeTurnId,
                 itemId,
                 ...(finalText ? { finalText } : {}),
                 emitEmpty: false,
               });
-              context.reasoning.lastThinking = finalText
-                ? { messageId: message.message.id, itemId, text: finalText }
+              const previous = context.reasoning.lastThinking;
+              context.reasoning.lastThinking = completedText.trim()
+                ? {
+                    messageId: message.message.id,
+                    itemId,
+                    text: completedText,
+                    followsThinking: previous !== null && previous.messageId === message.message.id,
+                  }
                 : null;
             }
           }

@@ -3298,14 +3298,32 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
+  // Summarized display can't mark a progress update, so only a short second of
+  // two thinking blocks before a tool call becomes text; the rest are Thoughts.
+  const plan = "Planning the check";
+  const update = "Found it: the memory file is the cause.";
+  const monologue = `I'm weighing whether to pre-render the diagrams at build time. ${"x".repeat(300)}`;
+  const paragraphs = "Found the cause.\n\nNow I'm checking the links too.";
   it.effect.each([
-    { model: "claude-opus-5-5", expected: "assistant_message" },
-    { model: "claude-fable-5-1", expected: "assistant_message" },
-    { model: "claude-opus-5", expected: "reasoning" },
-    { model: "claude-sonnet-4-6", expected: "reasoning" },
+    {
+      model: "claude-opus-5-5",
+      texts: [plan, update],
+      expected: ["reasoning", "assistant_message"],
+    },
+    {
+      model: "claude-fable-5-1",
+      texts: [plan, update],
+      expected: ["reasoning", "assistant_message"],
+    },
+    { model: "claude-opus-5", texts: [plan, update], expected: ["reasoning", "reasoning"] },
+    { model: "claude-sonnet-4-6", texts: [plan, update], expected: ["reasoning", "reasoning"] },
+    { model: "claude-opus-5-5", texts: [update], expected: ["reasoning"] },
+    { model: "claude-opus-5-5", texts: [plan, monologue], expected: ["reasoning", "reasoning"] },
+    { model: "claude-opus-5-5", texts: [plan, paragraphs], expected: ["reasoning", "reasoning"] },
+    { model: "claude-opus-5-5", texts: [" \n ", update], expected: ["reasoning", "reasoning"] },
   ] as const)(
-    "shows $model thinking right before a tool call as $expected",
-    ({ model, expected }) =>
+    "shows $model thinking $texts before a tool call as $expected",
+    ({ model, texts, expected }) =>
       Effect.gen(function* () {
         const harness = yield* makeWakeHarness;
         yield* harness.runtime.startTurn(
@@ -3327,16 +3345,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             message: { id: "reply-message", model, content },
           });
         const frames = [
-          snapshot("reasoning-snapshot", [
-            { type: "thinking", thinking: "Planning the check", signature: "sig" },
-          ]),
-          snapshot("reply-snapshot", [
-            {
-              type: "thinking",
-              thinking: "Found it: the memory file is the cause.",
-              signature: "sig",
-            },
-          ]),
+          ...texts.map((thinking, index) =>
+            snapshot(`thinking-snapshot-${index}`, [
+              { type: "thinking", thinking, signature: "sig" },
+            ]),
+          ),
           snapshot("tool-snapshot", [
             { type: "tool_use", id: "tool-1", name: "Bash", input: { command: "ls" } },
           ]),
@@ -3352,12 +3365,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               : [],
           ),
         );
+        const items = [...latest.values()].filter((item) => item.text.trim().length > 0);
+        const shown = texts.flatMap((text, index) =>
+          text.trim().length > 0 ? [[expected[index], text]] : [],
+        );
         assert.deepEqual(
-          [...latest.values()].map((item) => [item.type, item.text]),
-          [
-            ["reasoning", "Planning the check"],
-            [expected, "Found it: the memory file is the cause."],
-          ],
+          items.map((item) => [item.type, item.text]),
+          shown,
         );
       }).pipe(
         Effect.scoped,
