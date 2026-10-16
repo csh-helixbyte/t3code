@@ -5571,16 +5571,22 @@ export default function ChatView(props: ChatViewProps) {
         ? previous.get(session.tabId) !== requested.id
         : !previous.has(session.tabId);
       if (!fresh || session.reveal !== true) continue;
-      if (!autoShowFloatingPreview && requested?.force !== true) continue;
       const surface = rightPanelState.surfaces.find(
         (surface) => surface.kind === "preview" && surface.resourceId === session.tabId,
       );
-      if (surface && requested?.force === true) {
-        useRightPanelStore.getState().activateSurface(activeThreadRef, surface.id);
-      } else if (!surface) {
+      if (surface) {
+        if (requested?.force === true) {
+          useRightPanelStore.getState().activateSurface(activeThreadRef, surface.id);
+        }
+        continue;
+      }
+      // Sheet layouts have no room beside chat, so they float either way.
+      if (autoShowFloatingPreview || shouldUsePlanSidebarSheet) {
         usePreviewMiniPlayerStore
           .getState()
           .open(activeThreadRef, browserMiniPlayerSource(session.tabId));
+      } else {
+        useRightPanelStore.getState().openBrowser(activeThreadRef, session.tabId, true);
       }
     }
   }, [
@@ -5590,6 +5596,7 @@ export default function ChatView(props: ChatViewProps) {
     activeThreadRef,
     autoShowFloatingPreview,
     rightPanelState.surfaces,
+    shouldUsePlanSidebarSheet,
   ]);
   // A floating device follows its session: once the agent or another client
   // closes the device there is nothing left to stream.

@@ -322,6 +322,17 @@ describe("rightPanelStore", () => {
     expect(selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, refA)).toBe("diff");
   });
 
+  it("docks an agent-opened browser without counting it as a manual choice", () => {
+    const store = useRightPanelStore.getState();
+    const revision = store.getUserActionRevision(refA);
+    store.openBrowser(refA, "agent-browser", true);
+
+    const { byThreadKey } = useRightPanelStore.getState();
+    expect(selectThreadRightPanelState(byThreadKey, refA).isOpen).toBe(true);
+    expect(selectActiveRightPanel(byThreadKey, refA)).toBe("preview");
+    expect(store.getUserActionRevision(refA)).toBe(revision);
+  });
+
   it("keeps a maximized panel per thread without counting it as a manual choice", () => {
     const store = useRightPanelStore.getState();
     store.open(refA, "preview");

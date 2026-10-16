@@ -780,9 +780,9 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "browser-auto-show-floating-preview",
-    title: "Auto-show floating preview",
+    title: "Float agent previews over chat",
     to: "/settings/integrations",
-    searchTerms: ["agent opens browser device simulator pop into view hide"],
+    searchTerms: ["agent opens browser device simulator pop into view floating panel tab dock"],
   },
   {
     id: "automatic-pull",
