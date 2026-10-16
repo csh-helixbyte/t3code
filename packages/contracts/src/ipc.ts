@@ -33,6 +33,8 @@ export interface ContextMenuItem<T extends string = string> {
   separatorBefore?: boolean;
   /** Shows a check mark. Used to mark the current option inside a submenu. */
   checked?: boolean;
+  /** A single letter that picks this item while its menu is open, shown at the row's end. */
+  shortcut?: string;
   children?: readonly ContextMenuItem<T>[];
 }
 

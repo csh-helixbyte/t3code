@@ -891,20 +891,27 @@ export default function ClaudeSidebar() {
         const clicked = await settlePromise(() =>
           api.contextMenu.show<ThreadMenuAction>(
             [
-              { id: "rename", label: "Rename" },
+              { id: "rename", label: "Rename", shortcut: "r" },
               ...(supportsPinning
-                ? [{ id: isPinned ? "unpin" : "pin", label: isPinned ? "Unpin" : "Pin" } as const]
+                ? [
+                    {
+                      id: isPinned ? "unpin" : "pin",
+                      label: isPinned ? "Unpin" : "Pin",
+                      shortcut: "p",
+                    } as const,
+                  ]
                 : []),
               ...(supportsSettlement
                 ? [
                     {
                       id: isSettled ? "unsettle" : "settle",
                       label: isSettled ? "Un-settle" : "Settle",
+                      shortcut: "s",
                     } as const,
                   ]
                 : []),
               ...(thread.latestRun?.completedAt
-                ? [{ id: "mark-unread", label: "Mark as unread" } as const]
+                ? [{ id: "mark-unread", label: "Mark as unread", shortcut: "u" } as const]
                 : []),
               {
                 id: "move:recents",
@@ -930,8 +937,8 @@ export default function ClaudeSidebar() {
               },
               ...(thread.branch ? [{ id: "copy-branch", label: "Copy branch name" } as const] : []),
               { id: "copy-thread-id", label: "Copy thread ID" },
-              { id: "archive", label: "Archive", separatorBefore: true },
-              { id: "delete", label: "Delete", destructive: true },
+              { id: "archive", label: "Archive", shortcut: "a", separatorBefore: true },
+              { id: "delete", label: "Delete", shortcut: "d", destructive: true },
             ],
             position,
           ),

@@ -229,6 +229,9 @@ export function showContextMenuFallback<T extends string>(
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const menuStack: HTMLDivElement[] = [];
     const submenuTriggerStack: Array<HTMLButtonElement | undefined> = [];
+    // Letter shortcuts of each open level's enabled items, so a key press
+    // picks from the innermost menu, the one the pointer or focus is in.
+    const shortcutStack: Array<Map<string, HTMLButtonElement>> = [];
     let isDisposed = false;
     let canDismissFromPointer = false;
 
@@ -242,7 +245,7 @@ export function showContextMenuFallback<T extends string>(
       if (activeContextMenuDismiss === dismiss) {
         activeContextMenuDismiss = null;
       }
-      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("keydown", onKeyDown, true);
       document.removeEventListener("pointerdown", onPointerDown, true);
       document.removeEventListener("contextmenu", onContextMenu, true);
       const shouldRestoreFocus = isNodeWithinMenuStack(document.activeElement, menuStack);
@@ -259,7 +262,14 @@ export function showContextMenuFallback<T extends string>(
       if (event.key === "Escape") {
         event.preventDefault();
         cleanup(null);
+        return;
       }
+      if (event.metaKey || event.ctrlKey || event.altKey || event.key.length !== 1) return;
+      const button = shortcutStack[menuStack.length - 1]?.get(event.key.toLowerCase());
+      if (!button) return;
+      event.preventDefault();
+      event.stopPropagation();
+      button.click();
     };
 
     const onPointerDown = (event: PointerEvent) => {
@@ -280,6 +290,7 @@ export function showContextMenuFallback<T extends string>(
     const closeMenusFromLevel = (level: number) => {
       while (menuStack.length > level) {
         submenuTriggerStack.pop()?.setAttribute("aria-expanded", "false");
+        shortcutStack.pop();
         menuStack.pop()?.remove();
       }
     };
@@ -309,6 +320,7 @@ export function showContextMenuFallback<T extends string>(
         "max-h-[calc(100vh-0.5rem)] min-w-0 max-w-sm overflow-y-auto overflow-x-hidden p-1";
       inner.style.cssText =
         "max-height:calc(100vh - 0.5rem);min-width:0;max-width:24rem;overflow-x:hidden;overflow-y:auto;padding:0.25rem;";
+      const shortcuts = new Map<string, HTMLButtonElement>();
 
       for (const item of entries) {
         if (item.separatorBefore === true && inner.children.length > 0) {
@@ -381,6 +393,18 @@ export function showContextMenuFallback<T extends string>(
         label.className = "min-w-0 flex-1 truncate";
         label.textContent = item.label;
         button.appendChild(label);
+
+        if (item.shortcut) {
+          const hint = document.createElement("kbd");
+          hint.className = "ms-auto shrink-0 ps-4 font-sans text-muted-foreground text-xs";
+          hint.style.cssText =
+            "margin-inline-start:auto;flex-shrink:0;padding-inline-start:1rem;font-family:inherit;font-size:0.75rem;color:var(--contrast-muted-foreground);";
+          hint.textContent = item.shortcut.toUpperCase();
+          hint.setAttribute("aria-hidden", "true");
+          button.appendChild(hint);
+          button.setAttribute("aria-keyshortcuts", item.shortcut.toUpperCase());
+          if (!isDisabled) shortcuts.set(item.shortcut.toLowerCase(), button);
+        }
 
         if (hasChildren) {
           button.setAttribute("aria-haspopup", "menu");
@@ -479,13 +503,16 @@ export function showContextMenuFallback<T extends string>(
       document.body.appendChild(menu);
       menuStack[level] = menu;
       submenuTriggerStack[level] = parentTrigger;
+      shortcutStack[level] = shortcuts;
 
       requestAnimationFrame(() => {
         clampMenuPosition(menu, preferredLeft, preferredTop);
       });
     };
 
-    document.addEventListener("keydown", onKeyDown);
+    // Capture phase: the trigger that opened the menu often keeps focus and may
+    // stop key events from bubbling to the document.
+    document.addEventListener("keydown", onKeyDown, true);
     document.addEventListener("pointerdown", onPointerDown, true);
     document.addEventListener("contextmenu", onContextMenu, true);
     openMenu(items, position?.x ?? 0, position?.y ?? 0, 0);

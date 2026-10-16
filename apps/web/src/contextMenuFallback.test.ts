@@ -17,6 +17,8 @@ class FakeDomEvent {
   preventDefault() {
     this.defaultPrevented = true;
   }
+
+  stopPropagation() {}
 }
 
 class FakeElement {
@@ -74,6 +76,10 @@ class FakeElement {
       listener(event);
     }
     return true;
+  }
+
+  click() {
+    this.dispatchEvent(new FakeDomEvent("click"));
   }
 
   focus() {
@@ -172,6 +178,13 @@ class FakeDocument {
     if (index >= 0) {
       existing.splice(index, 1);
     }
+  }
+
+  dispatchEvent(event: FakeDomEvent) {
+    for (const listener of this.listeners.get(event.type) ?? []) {
+      listener(event);
+    }
+    return true;
   }
 
   querySelectorAll(tagName: string) {
@@ -328,6 +341,38 @@ describe("showContextMenuFallback", () => {
 
     await expect(selectionPromise).resolves.toBe("copy:branch");
     expect(invoker.focused).toBe(true);
+  });
+});
+
+describe("menu letter shortcuts", () => {
+  const pressKey = (key: string, init: Record<string, unknown> = {}) => {
+    const event = new KeyboardEvent("keydown", { key, ...init });
+    (document as unknown as FakeDocument).dispatchEvent(event as unknown as FakeDomEvent);
+    return event;
+  };
+
+  it("picks the item whose letter is pressed, in either case", async () => {
+    const selectionPromise = showContextMenuFallback([
+      { id: "rename", label: "Rename", shortcut: "r" },
+      { id: "archive", label: "Archive", shortcut: "a" },
+    ]);
+
+    expect(pressKey("A").defaultPrevented).toBe(true);
+    await expect(selectionPromise).resolves.toBe("archive");
+  });
+
+  it("ignores disabled items, modified keys and unbound letters", async () => {
+    const selectionPromise = showContextMenuFallback([
+      { id: "copy", label: "Copy path", shortcut: "c", disabled: true },
+      { id: "delete", label: "Delete", shortcut: "d" },
+    ]);
+
+    expect(pressKey("c").defaultPrevented).toBe(false);
+    expect(pressKey("d", { metaKey: true }).defaultPrevented).toBe(false);
+    expect(pressKey("x").defaultPrevented).toBe(false);
+    expect(findButton("Delete")).toBeTruthy();
+    dismissContextMenu();
+    await expect(selectionPromise).resolves.toBeNull();
   });
 });
 
