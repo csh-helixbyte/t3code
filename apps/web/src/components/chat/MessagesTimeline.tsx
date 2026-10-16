@@ -2100,8 +2100,8 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
                 row.kind === "attempt-fold" ||
                 row.kind === "html-render" ||
                 row.kind === "mcp-app"
-              ? "pb-2"
-              : "pb-4",
+              ? "pb-3"
+              : "pb-6",
         (row.kind === "message" && row.message.role === "assistant") ||
           row.kind === "assistant-meta"
           ? "group/assistant"
@@ -2816,7 +2816,7 @@ function AttemptFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "at
         className="size-3.5 shrink-0 text-muted-foreground"
         icon={row.expanded ? ChevronDown : ChevronRight}
       />
-      <span className="text-xs font-medium text-foreground/80">{row.label}</span>
+      <span className="text-xs font-medium text-secondary-label">{row.label}</span>
       <span className="text-2xs text-muted-foreground">Cut off by a steer</span>
     </button>
   );
@@ -2839,6 +2839,7 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
             listRef={ctx.listRef}
           >
             <ChatMarkdown
+              className="text-foreground"
               text={messageText}
               cwd={ctx.markdownCwd}
               threadRef={ctx.threadRef ?? undefined}
@@ -3209,7 +3210,7 @@ function V2EventTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "event"
               presentation.tone === "success" && "text-success",
             )}
           />
-          <span className="shrink-0 font-medium text-foreground/90">{presentation.label}</span>
+          <span className="shrink-0 font-medium text-secondary-label">{presentation.label}</span>
           {item.status !== "completed" ? (
             <span
               className={cn(
@@ -3291,7 +3292,7 @@ function V2EventTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "event"
         />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span className="text-xs font-medium text-foreground/90">{presentation.label}</span>
+            <span className="text-xs font-medium text-secondary-label">{presentation.label}</span>
             {item.status !== "completed" ? (
               <span
                 className={cn(
@@ -3427,7 +3428,7 @@ const V2SubagentGroup = memo(function V2SubagentGroup({
           className={cn(
             "flex w-full min-w-0 items-center gap-3 py-2 text-left transition-opacity hover:opacity-100",
             expanded || summary.active
-              ? "text-foreground opacity-100"
+              ? "text-secondary-label opacity-100"
               : "text-muted-foreground opacity-55",
           )}
         >
@@ -3955,7 +3956,7 @@ function LiveActivityContent({
               failed
                 ? failedToolIconClassName
                 : highlighted
-                  ? "text-foreground"
+                  ? "text-secondary-label"
                   : "text-icon-muted",
             )}
             role={announceFailure ? "img" : undefined}
@@ -3974,7 +3975,7 @@ function LiveActivityContent({
         <span
           className={cn(
             "block truncate",
-            highlighted && "text-foreground",
+            highlighted && "text-secondary-label",
             active && "live-tool-shine",
           )}
         >
@@ -4021,7 +4022,7 @@ function ThreadReadLabel({
         <Link
           to="/$environmentId/$threadId"
           params={{ environmentId, threadId: label.threadId }}
-          className="min-w-0 truncate rounded-sm text-foreground underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-ring"
+          className="min-w-0 truncate rounded-sm text-secondary-label underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-ring"
           onClick={stopRowToggle}
           onKeyDown={stopRowToggle}
         >
@@ -4094,7 +4095,7 @@ function LiveWorkEntryTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "
           ) : row.entry.questionAnswer && hasQuestionAnswer(row.entry.questionAnswer) ? (
             <span className="flex min-w-0 gap-1.5">
               <span className="min-w-0 truncate">{label}</span>
-              <span className="min-w-0 truncate text-foreground">
+              <span className="min-w-0 truncate text-secondary-label">
                 {getQuestionAnswerPreview(row.entry.questionAnswer)}
               </span>
             </span>
@@ -5421,7 +5422,7 @@ function ReasoningTraceContent({ entries }: { entries: ReadonlyArray<TimelineWor
       {entries.map((entry) => (
         <ChatMarkdown
           key={entry.id}
-          className="text-foreground"
+          className="text-secondary-label"
           text={entry.detail ?? ""}
           cwd={ctx.markdownCwd}
           threadRef={ctx.threadRef ?? undefined}
@@ -5662,13 +5663,12 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
             ? "text-icon-muted"
             : iconConfig.className,
   );
+  // Ordinary entries inherit the work log's dimmed label tone; only problems stand out.
   const headingClass = showWarningIndicator
     ? "font-medium text-warning"
     : showDestructiveRowStyle
       ? "font-medium text-destructive"
-      : workLogEntryIsToolLike(workEntry)
-        ? "text-secondary-label"
-        : "text-foreground/80";
+      : undefined;
   const threadLabel = isReasoning ? null : threadReadLabel(previewText, threadTarget);
   const accessiblePreview = [threadLabel?.text ?? previewText, answerPreview]
     .filter(Boolean)
@@ -5746,7 +5746,7 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
                   !expanded &&
                     workEntry.questionAnswer &&
                     hasQuestionAnswer(workEntry.questionAnswer)
-                    ? "text-foreground"
+                    ? "text-secondary-label"
                     : "text-muted-foreground",
                 )}
               >

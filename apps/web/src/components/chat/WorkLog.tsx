@@ -13,19 +13,7 @@ export function WorkLogBlock({
   continues?: boolean | undefined;
   children: ReactNode;
 }) {
-  return (
-    <div
-      className={
-        continues || layout === "group-header"
-          ? "pb-0"
-          : layout === "group-content"
-            ? "pb-1"
-            : "pb-2"
-      }
-    >
-      {children}
-    </div>
-  );
+  return <div className={continues || layout === "group-header" ? "pb-0" : "pb-3"}>{children}</div>;
 }
 
 /** Expanded members align with the header and use the same compact row geometry. */
@@ -53,12 +41,16 @@ function WorkLogLine({ icon, label, trailing, wrapLabel }: RowContent) {
         wrapLabel ? "items-start" : "items-center",
       )}
     >
+      {/* Work rows sit a step behind the conversation so messages stand out;
+          hovering a row brings it back to full strength. */}
       {icon ? (
-        <span className="relative flex size-6 shrink-0 items-center justify-center">{icon}</span>
+        <span className="relative flex size-6 shrink-0 items-center justify-center opacity-50 group-hover/timeline-row:opacity-100">
+          {icon}
+        </span>
       ) : null}
       <div
         className={cn(
-          "min-w-0 flex-1 text-secondary-label",
+          "min-w-0 flex-1 text-secondary-label/50 group-hover/timeline-row:text-secondary-label",
           !wrapLabel && "truncate [&_*]:whitespace-nowrap",
         )}
       >

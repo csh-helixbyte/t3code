@@ -51,7 +51,7 @@ export const ChangedFilesCard = memo(function ChangedFilesCard(props: {
         data-changed-files-header=""
         className="sticky top-2 z-10 flex items-center justify-between gap-2 rounded-t-lg bg-secondary px-3 py-2 dark:bg-background dark:bg-linear-to-b dark:from-input/20 dark:to-input/20"
       >
-        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs font-medium text-foreground">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs font-medium text-secondary-label">
           <span>
             {files.length} changed file{files.length === 1 ? "" : "s"}
           </span>
@@ -234,7 +234,7 @@ export const ChangedFilesTree = memo(function ChangedFilesTree(props: {
           theme={resolvedTheme}
           className="size-3.5 text-muted-foreground/70"
         />
-        <span className="flex min-w-0 font-mono text-xs text-foreground/85 group-hover:text-foreground">
+        <span className="flex min-w-0 font-mono text-xs text-secondary-label group-hover:text-foreground">
           <MiddleTruncate value={node.name} />
         </span>
         {node.stat && (
