@@ -338,7 +338,7 @@ function ThreadRowBody(props: ThreadRowBodyProps) {
                 onMenu(threadKey, { x: rect.left, y: rect.bottom + 4 });
               }}
               onKeyDown={(event) => event.stopPropagation()}
-              className="absolute inset-0 inline-flex cursor-pointer items-center justify-center rounded-sm text-sidebar-muted-foreground opacity-0 transition-opacity duration-100 group-focus-within/claude-row:opacity-100 group-hover/claude-row:opacity-100 group-data-menu-open/claude-row:bg-sidebar-border/60 group-data-menu-open/claude-row:text-sidebar-foreground group-data-menu-open/claude-row:opacity-100 hover:bg-sidebar-border/60 hover:text-sidebar-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring/50"
+              className="absolute -inset-1 inline-flex cursor-pointer items-center justify-center rounded-sm text-sidebar-muted-foreground opacity-0 transition-opacity duration-100 group-focus-within/claude-row:opacity-100 group-hover/claude-row:opacity-100 group-data-menu-open/claude-row:bg-sidebar-border/60 group-data-menu-open/claude-row:text-sidebar-foreground group-data-menu-open/claude-row:opacity-100 hover:bg-sidebar-border/60 hover:text-sidebar-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring/50"
             >
               <MoreHorizontalIcon className="size-3.5" />
             </button>
@@ -541,7 +541,7 @@ function SectionHeader(props: {
             const rect = event.currentTarget.getBoundingClientRect();
             props.onMenu?.({ x: rect.left, y: rect.bottom });
           }}
-          className="inline-flex size-4 shrink-0 cursor-pointer items-center justify-center rounded-sm opacity-0 group-hover/claude-section:opacity-100 hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:opacity-100"
+          className="-m-1 inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-sm opacity-0 group-hover/claude-section:opacity-100 hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:opacity-100"
         >
           <MoreHorizontalIcon className="size-3.5" />
         </button>
