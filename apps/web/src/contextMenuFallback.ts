@@ -343,7 +343,7 @@ export function showContextMenuFallback<T extends string>(
           ? `${rowBase} pointer-events-none cursor-not-allowed text-muted-foreground opacity-64`
           : isLeafDestructive
             ? `${rowBase} text-destructive-foreground hover:bg-destructive/10 hover:text-destructive-foreground`
-            : `${rowBase} text-foreground hover:bg-accent hover:text-accent-foreground`;
+            : `${rowBase} text-foreground hover:bg-foreground/10`;
         button.style.cssText =
           "display:flex;width:100%;min-height:1.75rem;align-items:center;gap:0.5rem;border:0;border-radius:var(--radius-sm);background:transparent;padding:0.25rem 0.5rem;color:var(--contrast-foreground);font-family:var(--font-sans,system-ui,sans-serif);font-size:0.875rem;line-height:1.25rem;text-align:left;cursor:default;";
         if (isLeafDestructive) {
@@ -400,20 +400,15 @@ export function showContextMenuFallback<T extends string>(
         if (!isDisabled) {
           let isHovered = false;
           let isFocused = false;
+          // A wash of the menu's own text color, not --accent: themes may set
+          // accent close to the glass background, hiding the highlight.
           const updateHighlight = () => {
             const isHighlighted = isHovered || isFocused;
             button.style.background = isHighlighted
               ? isLeafDestructive
                 ? "color-mix(in srgb, var(--destructive) 10%, transparent)"
-                : "var(--accent)"
+                : "color-mix(in srgb, var(--contrast-foreground) 10%, transparent)"
               : "transparent";
-            button.style.color = isHighlighted
-              ? isLeafDestructive
-                ? "var(--destructive-foreground)"
-                : "var(--contrast-accent-foreground)"
-              : isLeafDestructive
-                ? "var(--destructive-foreground)"
-                : "var(--contrast-foreground)";
           };
           button.addEventListener("mouseenter", () => {
             button.focus({ preventScroll: true });

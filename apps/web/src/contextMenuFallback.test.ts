@@ -314,13 +314,16 @@ describe("showContextMenuFallback", () => {
     expect(childButton).toBeTruthy();
     expect(siblingButton).toBeTruthy();
     expect(childButton?.focused).toBe(true);
-    expect(childButton?.style.background).toBe("var(--accent)");
-    expect(childButton?.style.color).toBe("var(--contrast-accent-foreground)");
+    expect(childButton?.style.background).toBe(
+      "color-mix(in srgb, var(--contrast-foreground) 10%, transparent)",
+    );
     siblingButton?.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
     expect(childButton?.focused).toBe(false);
     expect(childButton?.style.background).toBe("transparent");
     expect(siblingButton?.focused).toBe(true);
-    expect(siblingButton?.style.background).toBe("var(--accent)");
+    expect(siblingButton?.style.background).toBe(
+      "color-mix(in srgb, var(--contrast-foreground) 10%, transparent)",
+    );
     siblingButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 
     await expect(selectionPromise).resolves.toBe("copy:branch");
