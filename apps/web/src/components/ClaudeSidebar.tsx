@@ -471,23 +471,66 @@ function DropSection(props: {
   target: ClaudeSidebarDropTarget;
   label: string;
   dragActive: boolean;
+  /** For group sections: this group's position and the one being dragged. */
+  groupIndex?: number | undefined;
+  draggingGroupIndex?: number | null | undefined;
   className?: string | undefined;
   children: React.ReactNode;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: claudeSidebarDropId(props.target) });
+  const { groupIndex, draggingGroupIndex } = props;
+  // While a group is dragged, a line marks the edge it would land against:
+  // above a group it passes upward, below one it passes downward.
+  const reorderEdge =
+    isOver &&
+    groupIndex !== undefined &&
+    draggingGroupIndex != null &&
+    groupIndex !== draggingGroupIndex
+      ? groupIndex < draggingGroupIndex
+        ? "top"
+        : "bottom"
+      : null;
   return (
     <section
       ref={setNodeRef}
       aria-label={props.label}
       data-drop-id={claudeSidebarDropId(props.target)}
       className={cn(
-        "rounded-lg pb-0.5 transition-colors duration-100",
+        "relative rounded-lg pb-0.5 transition-colors duration-100",
         props.dragActive && isOver && "bg-sidebar-row-hover/70 ring-1 ring-sidebar-border",
+        groupIndex !== undefined && groupIndex === draggingGroupIndex && "opacity-40",
         props.className,
       )}
     >
+      {reorderEdge ? (
+        <div
+          aria-hidden
+          className={cn(
+            "pointer-events-none absolute inset-x-2 h-0.5 rounded-full bg-primary",
+            reorderEdge === "top" ? "-top-px" : "-bottom-px",
+          )}
+        />
+      ) : null}
       {props.children}
     </section>
+  );
+}
+
+const GROUP_DRAG_PREFIX = "group-drag:";
+
+// A group's header doubles as the handle that drags the group to a new spot.
+function DraggableGroupHeader(
+  props: React.ComponentProps<typeof SectionHeader> & { groupId: string },
+) {
+  const { groupId, ...header } = props;
+  const { setNodeRef, listeners } = useDraggable({
+    id: `${GROUP_DRAG_PREFIX}${groupId}`,
+    disabled: header.renaming !== undefined,
+  });
+  return (
+    <div ref={setNodeRef} {...listeners}>
+      <SectionHeader {...header} />
+    </div>
   );
 }
 
@@ -699,6 +742,7 @@ export default function ClaudeSidebar() {
   const deleteGroup = useThreadGroupsStore((s) => s.deleteGroup);
   const toggleGroup = useThreadGroupsStore((s) => s.toggleGroup);
   const moveThreadToGroup = useThreadGroupsStore((s) => s.moveThreadToGroup);
+  const moveGroup = useThreadGroupsStore((s) => s.moveGroup);
   const togglePinned = useThreadGroupsStore((s) => s.togglePinned);
   const toggleRecents = useThreadGroupsStore((s) => s.toggleRecents);
   const settledCollapsed = useThreadGroupsStore((s) => s.settledCollapsed);
@@ -1039,11 +1083,19 @@ export default function ClaudeSidebar() {
       void (async () => {
         const api = readLocalApi();
         if (!api) return;
+        const allGroups = useThreadGroupsStore.getState().groups;
+        const index = allGroups.findIndex((candidate) => candidate.id === group.id);
         const clicked = await settlePromise(() =>
-          api.contextMenu.show<"rename" | "new" | "delete">(
+          api.contextMenu.show<"rename" | "new" | "up" | "down" | "delete">(
             [
               { id: "rename", label: "Rename group" },
               { id: "new", label: "New group" },
+              ...(index > 0
+                ? [{ id: "up" as const, label: "Move up", separatorBefore: true }]
+                : []),
+              ...(index !== -1 && index < allGroups.length - 1
+                ? [{ id: "down" as const, label: "Move down", separatorBefore: index === 0 }]
+                : []),
               { id: "delete", label: "Delete group", destructive: true, separatorBefore: true },
             ],
             position,
@@ -1052,10 +1104,12 @@ export default function ClaudeSidebar() {
         if (clicked._tag === "Failure") return;
         if (clicked.value === "rename") setRenamingGroupId(group.id);
         if (clicked.value === "new") startNewGroup();
+        if (clicked.value === "up") moveGroup(group.id, index - 1);
+        if (clicked.value === "down") moveGroup(group.id, index + 1);
         if (clicked.value === "delete") deleteGroup(group.id);
       })();
     },
-    [deleteGroup, startNewGroup],
+    [deleteGroup, moveGroup, startNewGroup],
   );
   const handleRecentsMenu = useCallback(
     (position: { x: number; y: number }) => {
@@ -1158,15 +1212,43 @@ export default function ClaudeSidebar() {
   // Nothing above the dragged row may change size while a drag runs: the
   // drag library treats any scroll or shift as pointer movement, and the
   // lifted row would drift away from the cursor.
+  // Groups drag by their header to reorder; they never change any thread.
+  const [draggingGroupId, setDraggingGroupId] = useState<string | null>(null);
+  const [overlayGroupId, setOverlayGroupId] = useState<string | null>(null);
+  const overlayGroup = overlayGroupId
+    ? groups.find((group) => group.id === overlayGroupId)
+    : undefined;
+  const draggingGroupIndex =
+    draggingGroupId === null ? null : groups.findIndex((group) => group.id === draggingGroupId);
   const handleDragStart = useCallback((event: DragStartEvent) => {
-    setDraggingThreadKey(String(event.active.id));
-    setOverlayThreadKey(String(event.active.id));
+    const id = String(event.active.id);
+    if (id.startsWith(GROUP_DRAG_PREFIX)) {
+      const groupId = id.slice(GROUP_DRAG_PREFIX.length);
+      setDraggingGroupId(groupId);
+      setOverlayGroupId(groupId);
+      setOverlayThreadKey(null);
+      return;
+    }
+    setDraggingThreadKey(id);
+    setOverlayThreadKey(id);
+    setOverlayGroupId(null);
   }, []);
   const handleDragEnd = useCallback(
     (event: DragEndEvent) => {
       setDraggingThreadKey(null);
+      setDraggingGroupId(null);
       suppressRowClickUntil = Date.now() + 250;
-      const threadKey = String(event.active.id);
+      const activeId = String(event.active.id);
+      if (activeId.startsWith(GROUP_DRAG_PREFIX)) {
+        const over = event.over ? parseClaudeSidebarDropId(String(event.over.id)) : null;
+        if (over?.kind !== "group") return;
+        const toIndex = useThreadGroupsStore
+          .getState()
+          .groups.findIndex((group) => group.id === over.groupId);
+        if (toIndex !== -1) moveGroup(activeId.slice(GROUP_DRAG_PREFIX.length), toIndex);
+        return;
+      }
+      const threadKey = activeId;
       const thread = threadByKeyRef.current.get(threadKey);
       const target = event.over ? parseClaudeSidebarDropId(String(event.over.id)) : null;
       if (!thread || !target) return;
@@ -1199,6 +1281,7 @@ export default function ClaudeSidebar() {
     },
     [
       isThreadSettled,
+      moveGroup,
       moveThreadToGroup,
       pinThread,
       serverConfigs,
@@ -1270,7 +1353,10 @@ export default function ClaudeSidebar() {
             modifiers={[restrictToVerticalAxis]}
             onDragStart={handleDragStart}
             onDragEnd={handleDragEnd}
-            onDragCancel={() => setDraggingThreadKey(null)}
+            onDragCancel={() => {
+              setDraggingThreadKey(null);
+              setDraggingGroupId(null);
+            }}
           >
             <SidebarGroup className="flex-1" role="presentation">
               <div className="relative flex flex-col gap-px">
@@ -1317,17 +1403,23 @@ export default function ClaudeSidebar() {
                 </DropSection>
               ) : null}
 
-              {sections.groups.map(({ group, threads: groupThreads }) => (
+              {sections.groups.map(({ group, threads: groupThreads }, groupIndex) => (
                 <DropSection
                   key={group.id}
                   target={{ kind: "group", groupId: group.id }}
                   label={group.name}
                   dragActive={dragActive}
+                  groupIndex={groupIndex}
+                  draggingGroupIndex={draggingGroupIndex}
                 >
-                  <SectionHeader
+                  <DraggableGroupHeader
+                    groupId={group.id}
                     label={group.name}
                     collapsed={group.collapsed}
-                    onToggle={() => toggleGroup(group.id)}
+                    onToggle={() => {
+                      if (Date.now() < suppressRowClickUntil) return;
+                      toggleGroup(group.id);
+                    }}
                     onMenu={(position) => handleGroupMenu(group, position)}
                     renaming={
                       renamingGroupId === group.id
@@ -1468,6 +1560,14 @@ export default function ClaudeSidebar() {
                     isRenaming={false}
                     jumpLabel={null}
                   />
+                </div>
+              ) : overlayGroup ? (
+                <div className="flex h-7 cursor-grabbing items-center gap-1 rounded-md bg-sidebar-row-active pl-2.5 text-xs text-sidebar-foreground shadow-lg ring-1 ring-sidebar-border">
+                  <ChevronRightIcon
+                    aria-hidden
+                    className={cn("size-3 shrink-0", !overlayGroup.collapsed && "rotate-90")}
+                  />
+                  <span className="min-w-0 truncate">{overlayGroup.name}</span>
                 </div>
               ) : null}
             </DragOverlay>
