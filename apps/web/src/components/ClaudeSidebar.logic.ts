@@ -9,9 +9,10 @@ import {
 /**
  * The one status mark a row carries, Claude desktop style:
  * - working: a dimmed gray dot that pulses while the agent runs
- * - attention: the agent is blocked on the user (approval or question)
+ * - attention: the agent is blocked on the user (approval, question, or a
+ *   proposed plan awaiting approval)
  * - failed: the session errored
- * - unread: the agent finished (or proposed a plan) since you last looked
+ * - unread: the agent finished since you last looked
  */
 export type ClaudeSidebarDot = "working" | "attention" | "failed" | "unread";
 
@@ -32,6 +33,7 @@ export function resolveClaudeSidebarDot(
     case "Waiting":
       return "working";
     case "Plan Ready":
+      return "attention";
     case "Completed":
       return "unread";
     default:

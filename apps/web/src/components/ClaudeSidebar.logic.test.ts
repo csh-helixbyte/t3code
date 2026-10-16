@@ -49,6 +49,25 @@ describe("resolveClaudeSidebarDot", () => {
     ).toBe("attention");
   });
 
+  it("asks for attention while a question waits, and clears once answered", () => {
+    const running = { ...baseStatus, runtime: { status: "running" } as DotInput["runtime"] };
+    expect(resolveClaudeSidebarDot({ ...running, hasPendingUserInput: true })).toBe("attention");
+    expect(resolveClaudeSidebarDot(running)).toBe("working");
+  });
+
+  it("asks for attention while a proposed plan awaits approval, even after a visit", () => {
+    const plan = {
+      ...baseStatus,
+      interactionMode: "plan" as const,
+      hasActionableProposedPlan: true,
+      latestRun: completedRun("2026-01-01T00:05:00.000Z"),
+      lastVisitedAt: "2026-01-01T00:06:00.000Z",
+    };
+    expect(resolveClaudeSidebarDot(plan)).toBe("attention");
+    // Once the plan is implemented or dismissed it is no longer actionable.
+    expect(resolveClaudeSidebarDot({ ...plan, hasActionableProposedPlan: false })).toBeNull();
+  });
+
   it("marks a finished delegated subthread unread until it is first opened", () => {
     const subthread = {
       ...baseStatus,
