@@ -27,15 +27,21 @@ import {
   DragOverlay,
   defaultDropAnimationSideEffects,
   PointerSensor,
-  useDraggable,
+  closestCenter,
+  pointerWithin,
+  rectIntersection,
   useDroppable,
   useSensor,
   useSensors,
+  type CollisionDetection,
   type DragEndEvent,
+  type DragMoveEvent,
   type DragStartEvent,
   type DropAnimation,
 } from "@dnd-kit/core";
 import { restrictToVerticalAxis } from "@dnd-kit/modifiers";
+import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 
 import {
   isAtomCommandInterrupted,
@@ -87,6 +93,7 @@ import {
   parseClaudeSidebarDropId,
   sidebarParentThreadId,
   partitionClaudeSidebar,
+  placeThreadKey,
   planClaudeSidebarDrop,
   resolveClaudeSidebarDot,
   type ClaudeSidebarDot,
@@ -178,7 +185,7 @@ const rowClassName =
 // group, or back home while a server pin/settle is in flight) instead of
 // vanishing. The source row stays hidden until the overlay lands on it.
 const dropAnimation: DropAnimation = {
-  duration: 200,
+  duration: 180,
   easing: "cubic-bezier(0.2, 0, 0, 1)",
   sideEffects: defaultDropAnimationSideEffects({ styles: { active: { opacity: "0" } } }),
 };
@@ -352,24 +359,89 @@ function ThreadRowBody(props: ThreadRowBodyProps) {
 /** Child rows hang off a hairline that ends in a rounded elbow at the last one. */
 type ThreadRowGuide = "middle" | "last" | null;
 
+// Drag payloads and drop targets say what they are through their `data.kind`:
+// a top-level row inside a group is a sortable row, a group section sorts
+// among groups and takes thread drops, and Pinned/Recents/Settled are plain
+// sections.
+type SidebarDragKind = "row" | "group" | "section";
+function dragKindOf(entity: { data: { current?: Record<string, unknown> | undefined } }) {
+  return entity.data.current?.kind as SidebarDragKind | undefined;
+}
+
+type RowDropEdge = "before" | "after";
+interface RowDropSlot {
+  readonly threadKey: string;
+  readonly groupId: string;
+  readonly edge: RowDropEdge;
+  /** Within its own group the rows slide apart instead of showing a line. */
+  readonly sameList: boolean;
+}
+
+interface SortableData {
+  readonly containerId: string | number;
+  readonly index: number;
+}
+
+/**
+ * The slot a dragged thread is over in a group. Inside its own group it
+ * takes the hovered row's place, as the sliding rows show; coming from
+ * elsewhere it goes on whichever side of the row the lifted row's middle is.
+ */
+function rowDropSlot(event: DragMoveEvent | DragEndEvent): RowDropSlot | null {
+  const over = event.over;
+  if (!over || dragKindOf(over) !== "row") return null;
+  const threadKey = String(over.id);
+  const groupId = over.data.current?.groupId;
+  if (threadKey === String(event.active.id) || typeof groupId !== "string") return null;
+  const from = event.active.data.current?.sortable as SortableData | undefined;
+  const to = over.data.current?.sortable as SortableData | undefined;
+  if (from && to && from.containerId === to.containerId) {
+    return { threadKey, groupId, edge: from.index < to.index ? "after" : "before", sameList: true };
+  }
+  const dragged = event.active.rect.current.translated;
+  if (!dragged) return null;
+  const edge =
+    dragged.top + dragged.height / 2 < over.rect.top + over.rect.height / 2 ? "before" : "after";
+  return { threadKey, groupId, edge, sameList: false };
+}
+
+// Rows and groups slide on the same quick ease-out as the drop.
+const SORT_TRANSITION = { duration: 160, easing: "cubic-bezier(0.2, 0, 0, 1)" };
+
 const ClaudeThreadRow = memo(function ClaudeThreadRow(
   props: ThreadRowBodyProps & {
     isActive: boolean;
     isMenuOpen: boolean;
     guide: ThreadRowGuide;
     draggable: boolean;
+    /** The group whose order this row sorts in; null outside groups. */
+    reorderGroupId: string | null;
+    dropEdge: RowDropEdge | null;
     onOpen: (thread: SidebarThreadSummary) => void;
     onMenu: (threadKey: string, position: { x: number; y: number }) => void;
     children?: React.ReactNode;
   },
 ) {
   const { thread, threadKey, onOpen, onMenu } = props;
-  const { setNodeRef, listeners, isDragging } = useDraggable({
-    id: threadKey,
-    disabled: !props.draggable || props.isRenaming,
-  });
+  // The whole item (row plus nested children) is what slides and what drops
+  // measure; only the row itself picks it up.
+  const { setNodeRef, setActivatorNodeRef, listeners, isDragging, transform, transition } =
+    useSortable({
+      id: threadKey,
+      data: { kind: "row", groupId: props.reorderGroupId },
+      disabled: {
+        draggable: !props.draggable || props.isRenaming,
+        droppable: props.reorderGroupId === null,
+      },
+      transition: SORT_TRANSITION,
+    });
   return (
-    <li className="relative list-none">
+    <li
+      ref={setNodeRef}
+      style={{ transform: CSS.Translate.toString(transform), transition }}
+      className="relative list-none"
+    >
+      {props.dropEdge ? <DropLine edge={props.dropEdge} /> : null}
       {props.guide === "middle" ? (
         <span
           aria-hidden
@@ -382,7 +454,7 @@ const ClaudeThreadRow = memo(function ClaudeThreadRow(
         />
       ) : null}
       <div
-        ref={setNodeRef}
+        ref={setActivatorNodeRef}
         {...listeners}
         role="button"
         tabIndex={0}
@@ -398,7 +470,9 @@ const ClaudeThreadRow = memo(function ClaudeThreadRow(
             ? "bg-sidebar-row-active text-sidebar-foreground"
             : "text-sidebar-foreground/85 hover:bg-sidebar-row-hover",
           props.isMenuOpen && !props.isActive && "bg-sidebar-row-hover",
-          isDragging && "opacity-40",
+          // The picked-up row stays behind as a faint ghost of where it lands.
+          "transition-[background-color,color,opacity]",
+          isDragging && "opacity-30",
         )}
         onClick={() => {
           if (props.isRenaming || Date.now() < suppressRowClickUntil) return;
@@ -467,71 +541,112 @@ function Collapse(props: { open: boolean; children: React.ReactNode }) {
   );
 }
 
+/** Where a thread dragged in from elsewhere will land: a line with a dot at its head. */
+function DropLine(props: { edge: RowDropEdge }) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "pointer-events-none absolute inset-x-1.5 z-10 flex h-0.5 origin-left animate-sidebar-drop-line items-center motion-reduce:animate-none",
+        props.edge === "before" ? "-top-px" : "-bottom-px",
+      )}
+    >
+      <span className="-ml-0.5 size-1.5 shrink-0 rounded-full bg-primary" />
+      <span className="h-full flex-1 rounded-full bg-primary" />
+    </span>
+  );
+}
+
+// A section a thread is about to land in tints in; it never changes size
+// while a drag runs, so nothing shifts under the pointer.
+function dropSectionClassName(targeted: boolean) {
+  return cn(
+    "relative rounded-lg pb-0.5 transition-[background-color,box-shadow] duration-150 ease-out",
+    targeted && "bg-sidebar-row-hover/60 ring-1 ring-sidebar-border",
+  );
+}
+
+// Wraps a section so a dragged thread can land anywhere on it, header included.
 function DropSection(props: {
   target: ClaudeSidebarDropTarget;
   label: string;
   dragActive: boolean;
-  /** For group sections: this group's position and the one being dragged. */
-  groupIndex?: number | undefined;
-  draggingGroupIndex?: number | null | undefined;
   className?: string | undefined;
   children: React.ReactNode;
 }) {
-  const { setNodeRef, isOver } = useDroppable({ id: claudeSidebarDropId(props.target) });
-  const { groupIndex, draggingGroupIndex } = props;
-  // While a group is dragged, a line marks the edge it would land against:
-  // above a group it passes upward, below one it passes downward.
-  const reorderEdge =
-    isOver &&
-    groupIndex !== undefined &&
-    draggingGroupIndex != null &&
-    groupIndex !== draggingGroupIndex
-      ? groupIndex < draggingGroupIndex
-        ? "top"
-        : "bottom"
-      : null;
+  const { setNodeRef, isOver } = useDroppable({
+    id: claudeSidebarDropId(props.target),
+    data: { kind: "section" },
+  });
   return (
     <section
       ref={setNodeRef}
       aria-label={props.label}
       data-drop-id={claudeSidebarDropId(props.target)}
-      className={cn(
-        "relative rounded-lg pb-0.5 transition-colors duration-100",
-        props.dragActive && isOver && "bg-sidebar-row-hover/70 ring-1 ring-sidebar-border",
-        groupIndex !== undefined && groupIndex === draggingGroupIndex && "opacity-40",
-        props.className,
-      )}
+      className={cn(dropSectionClassName(props.dragActive && isOver), props.className)}
     >
-      {reorderEdge ? (
-        <div
-          aria-hidden
-          className={cn(
-            "pointer-events-none absolute inset-x-2 h-0.5 rounded-full bg-primary",
-            reorderEdge === "top" ? "-top-px" : "-bottom-px",
-          )}
-        />
-      ) : null}
       {props.children}
     </section>
   );
 }
 
-const GROUP_DRAG_PREFIX = "group-drag:";
-
-// A group's header doubles as the handle that drags the group to a new spot.
-function DraggableGroupHeader(
-  props: React.ComponentProps<typeof SectionHeader> & { groupId: string },
-) {
-  const { groupId, ...header } = props;
-  const { setNodeRef, listeners } = useDraggable({
-    id: `${GROUP_DRAG_PREFIX}${groupId}`,
-    disabled: header.renaming !== undefined,
-  });
+/**
+ * A user group: sorts among the other groups by dragging its header, and
+ * takes thread drops anywhere on it. `targeted` lights it up while a thread
+ * is over one of its rows.
+ */
+function GroupSection(props: {
+  group: ThreadGroup;
+  threadDragActive: boolean;
+  targeted: boolean;
+  header: Omit<React.ComponentProps<typeof SectionHeader>, "label" | "collapsed">;
+  children: React.ReactNode;
+}) {
+  const { group } = props;
+  const dropId = claudeSidebarDropId({ kind: "group", groupId: group.id });
+  const { setNodeRef, setActivatorNodeRef, listeners, isOver, isDragging, transform, transition } =
+    useSortable({
+      id: dropId,
+      data: { kind: "group", groupId: group.id },
+      disabled: { draggable: props.header.renaming !== undefined, droppable: false },
+      transition: SORT_TRANSITION,
+    });
+  const targeted = props.threadDragActive && (isOver || props.targeted);
   return (
-    <div ref={setNodeRef} {...listeners}>
-      <SectionHeader {...header} />
-    </div>
+    <section
+      ref={setNodeRef}
+      aria-label={group.name}
+      data-drop-id={dropId}
+      data-targeted={targeted ? "" : undefined}
+      style={{ transform: CSS.Translate.toString(transform), transition }}
+      className={cn(
+        "group/claude-drop",
+        dropSectionClassName(targeted),
+        isDragging && "opacity-30",
+      )}
+    >
+      <div ref={setActivatorNodeRef} {...listeners}>
+        <SectionHeader label={group.name} collapsed={group.collapsed} {...props.header} />
+      </div>
+      {props.children}
+    </section>
   );
+}
+
+type GroupMenuAction = "rename" | "new" | "hide" | "up" | "down" | "delete" | `show:${string}`;
+
+/** The way back from Hide group: a submenu that shows a hidden group again. */
+function hiddenGroupsMenuItems(groups: readonly ThreadGroup[]) {
+  const hidden = groups.filter((group) => group.hidden);
+  if (hidden.length === 0) return [];
+  return [
+    {
+      id: `show:${hidden[0]!.id}` as const,
+      label: "Show hidden group",
+      separatorBefore: true,
+      children: hidden.map((group) => ({ id: `show:${group.id}` as const, label: group.name })),
+    },
+  ];
 }
 
 function SectionHeader(props: {
@@ -699,6 +814,8 @@ type ThreadMenuAction =
   | "move:recents"
   | "move:new"
   | `move:${string}`
+  | "order:up"
+  | "order:down"
   | "copy-path"
   | "copy-branch"
   | "copy-thread-id"
@@ -735,6 +852,7 @@ export default function ClaudeSidebar() {
 
   const groups = useThreadGroupsStore((s) => s.groups);
   const groupIdByThreadKey = useThreadGroupsStore((s) => s.groupIdByThreadKey);
+  const threadOrderByGroupId = useThreadGroupsStore((s) => s.threadOrderByGroupId);
   const pinnedCollapsed = useThreadGroupsStore((s) => s.pinnedCollapsed);
   const recentsCollapsed = useThreadGroupsStore((s) => s.recentsCollapsed);
   const createGroup = useThreadGroupsStore((s) => s.createGroup);
@@ -743,6 +861,8 @@ export default function ClaudeSidebar() {
   const toggleGroup = useThreadGroupsStore((s) => s.toggleGroup);
   const moveThreadToGroup = useThreadGroupsStore((s) => s.moveThreadToGroup);
   const moveGroup = useThreadGroupsStore((s) => s.moveGroup);
+  const setGroupHidden = useThreadGroupsStore((s) => s.setGroupHidden);
+  const setGroupThreadOrder = useThreadGroupsStore((s) => s.setGroupThreadOrder);
   const togglePinned = useThreadGroupsStore((s) => s.togglePinned);
   const toggleRecents = useThreadGroupsStore((s) => s.toggleRecents);
   const settledCollapsed = useThreadGroupsStore((s) => s.settledCollapsed);
@@ -790,10 +910,21 @@ export default function ClaudeSidebar() {
       isSettled: isThreadSettled,
       groups,
       groupIdByThreadKey,
+      threadOrderByGroupId,
     });
     // Most recently settled first, as in the stock Settled shelf.
     return { ...partition, settled: sortSettledThreads(partition.settled) };
-  }, [groupIdByThreadKey, groups, isThreadSettled, threads]);
+  }, [groupIdByThreadKey, groups, isThreadSettled, threadOrderByGroupId, threads]);
+  const sectionsRef = useRef(sections);
+  sectionsRef.current = sections;
+  /** A visible group's top-level thread keys, in the order shown. */
+  const shownGroupOrder = useCallback(
+    (groupId: string) =>
+      (sectionsRef.current.groups.find(({ group }) => group.id === groupId)?.threads ?? []).map(
+        threadKeyOf,
+      ),
+    [],
+  );
   const visibleSettled = sections.settled.slice(0, settledLimit);
   const visibleRecents = sections.recents.slice(0, recentsLimit);
   // Keyboard jump and traversal follow what is on screen, top to bottom.
@@ -925,6 +1056,10 @@ export default function ClaudeSidebar() {
         const isPinned = thread.pinnedAt != null;
         const isSettled = isThreadSettled(thread);
         const currentGroupId = useThreadGroupsStore.getState().groupIdByThreadKey[threadKey];
+        // Only a top-level row shown in a group can move within it.
+        const groupOrder =
+          currentGroupId && !isPinned && !isSettled ? shownGroupOrder(currentGroupId) : [];
+        const orderIndex = groupOrder.indexOf(threadKey);
         const workspacePath =
           thread.worktreePath ??
           projects.find(
@@ -964,7 +1099,7 @@ export default function ClaudeSidebar() {
                 children: [
                   ...groups.map((group) => ({
                     id: `move:${group.id}` as const,
-                    label: group.name,
+                    label: group.hidden ? `${group.name} (hidden)` : group.name,
                     checked: currentGroupId === group.id,
                   })),
                   ...(currentGroupId
@@ -973,6 +1108,10 @@ export default function ClaudeSidebar() {
                   { id: "move:new", label: "New group…", separatorBefore: groups.length > 0 },
                 ],
               },
+              ...(orderIndex > 0 ? [{ id: "order:up", label: "Move up" } as const] : []),
+              ...(orderIndex !== -1 && orderIndex < groupOrder.length - 1
+                ? [{ id: "order:down", label: "Move down" } as const]
+                : []),
               {
                 id: "copy-path",
                 label: "Copy path",
@@ -1014,6 +1153,21 @@ export default function ClaudeSidebar() {
             return;
           case "move:new":
             startNewGroup(threadKey);
+            return;
+          case "order:up":
+          case "order:down":
+            if (currentGroupId) {
+              const anchor = groupOrder[orderIndex + (action === "order:up" ? -1 : 1)]!;
+              setGroupThreadOrder(
+                currentGroupId,
+                placeThreadKey(
+                  groupOrder,
+                  threadKey,
+                  anchor,
+                  action === "order:up" ? "before" : "after",
+                ),
+              );
+            }
             return;
           case "copy-path":
             if (workspacePath)
@@ -1072,7 +1226,9 @@ export default function ClaudeSidebar() {
       projects,
       serverConfigs,
       isThreadSettled,
+      setGroupThreadOrder,
       settleThread,
+      shownGroupOrder,
       startNewGroup,
       unsettleThread,
     ],
@@ -1084,32 +1240,40 @@ export default function ClaudeSidebar() {
         const api = readLocalApi();
         if (!api) return;
         const allGroups = useThreadGroupsStore.getState().groups;
-        const index = allGroups.findIndex((candidate) => candidate.id === group.id);
+        // Up and down step past hidden groups, so every move shows.
+        const shown = allGroups.filter((candidate) => !candidate.hidden);
+        const index = shown.findIndex((candidate) => candidate.id === group.id);
+        const above = index > 0 ? shown[index - 1] : undefined;
+        const below = index !== -1 ? shown[index + 1] : undefined;
         const clicked = await settlePromise(() =>
-          api.contextMenu.show<"rename" | "new" | "up" | "down" | "delete">(
+          api.contextMenu.show<GroupMenuAction>(
             [
               { id: "rename", label: "Rename group" },
               { id: "new", label: "New group" },
-              ...(index > 0
-                ? [{ id: "up" as const, label: "Move up", separatorBefore: true }]
+              { id: "hide", label: "Hide group" },
+              ...(above ? [{ id: "up" as const, label: "Move up", separatorBefore: true }] : []),
+              ...(below
+                ? [{ id: "down" as const, label: "Move down", separatorBefore: !above }]
                 : []),
-              ...(index !== -1 && index < allGroups.length - 1
-                ? [{ id: "down" as const, label: "Move down", separatorBefore: index === 0 }]
-                : []),
+              ...hiddenGroupsMenuItems(allGroups),
               { id: "delete", label: "Delete group", destructive: true, separatorBefore: true },
             ],
             position,
           ),
         );
-        if (clicked._tag === "Failure") return;
-        if (clicked.value === "rename") setRenamingGroupId(group.id);
-        if (clicked.value === "new") startNewGroup();
-        if (clicked.value === "up") moveGroup(group.id, index - 1);
-        if (clicked.value === "down") moveGroup(group.id, index + 1);
-        if (clicked.value === "delete") deleteGroup(group.id);
+        if (clicked._tag === "Failure" || !clicked.value) return;
+        const action = clicked.value;
+        const indexOf = (target: ThreadGroup) => allGroups.indexOf(target);
+        if (action === "rename") setRenamingGroupId(group.id);
+        else if (action === "new") startNewGroup();
+        else if (action === "hide") setGroupHidden(group.id, true);
+        else if (action === "up" && above) moveGroup(group.id, indexOf(above));
+        else if (action === "down" && below) moveGroup(group.id, indexOf(below));
+        else if (action === "delete") deleteGroup(group.id);
+        else if (action.startsWith("show:")) setGroupHidden(action.slice("show:".length), false);
       })();
     },
-    [deleteGroup, moveGroup, startNewGroup],
+    [deleteGroup, moveGroup, setGroupHidden, startNewGroup],
   );
   const handleRecentsMenu = useCallback(
     (position: { x: number; y: number }) => {
@@ -1117,14 +1281,20 @@ export default function ClaudeSidebar() {
         const api = readLocalApi();
         if (!api) return;
         const clicked = await settlePromise(() =>
-          api.contextMenu.show<"new">([{ id: "new", label: "New group" }], position),
+          api.contextMenu.show<"new" | `show:${string}`>(
+            [
+              { id: "new", label: "New group" },
+              ...hiddenGroupsMenuItems(useThreadGroupsStore.getState().groups),
+            ],
+            position,
+          ),
         );
-        if (clicked._tag === "Success" && clicked.value === "new") {
-          startNewGroup();
-        }
+        if (clicked._tag === "Failure" || !clicked.value) return;
+        if (clicked.value === "new") startNewGroup();
+        else setGroupHidden(clicked.value.slice("show:".length), false);
       })();
     },
-    [startNewGroup],
+    [setGroupHidden, startNewGroup],
   );
 
   // Thread jump (mod+1..9) and previous/next traversal, as in the stock sidebar.
@@ -1213,18 +1383,26 @@ export default function ClaudeSidebar() {
   // drag library treats any scroll or shift as pointer movement, and the
   // lifted row would drift away from the cursor.
   // Groups drag by their header to reorder; they never change any thread.
-  const [draggingGroupId, setDraggingGroupId] = useState<string | null>(null);
   const [overlayGroupId, setOverlayGroupId] = useState<string | null>(null);
   const overlayGroup = overlayGroupId
     ? groups.find((group) => group.id === overlayGroupId)
     : undefined;
-  const draggingGroupIndex =
-    draggingGroupId === null ? null : groups.findIndex((group) => group.id === draggingGroupId);
+  // Where a dragged thread would land in a group's order.
+  const [dropSlot, setDropSlot] = useState<RowDropSlot | null>(null);
+  const handleDragMove = useCallback((event: DragMoveEvent) => {
+    const next = rowDropSlot(event);
+    setDropSlot((current) =>
+      current?.threadKey === next?.threadKey &&
+      current?.edge === next?.edge &&
+      current?.sameList === next?.sameList
+        ? current
+        : next,
+    );
+  }, []);
   const handleDragStart = useCallback((event: DragStartEvent) => {
     const id = String(event.active.id);
-    if (id.startsWith(GROUP_DRAG_PREFIX)) {
-      const groupId = id.slice(GROUP_DRAG_PREFIX.length);
-      setDraggingGroupId(groupId);
+    const groupId = event.active.data.current?.groupId;
+    if (dragKindOf(event.active) === "group" && typeof groupId === "string") {
       setOverlayGroupId(groupId);
       setOverlayThreadKey(null);
       return;
@@ -1236,21 +1414,29 @@ export default function ClaudeSidebar() {
   const handleDragEnd = useCallback(
     (event: DragEndEvent) => {
       setDraggingThreadKey(null);
-      setDraggingGroupId(null);
+      setDropSlot(null);
       suppressRowClickUntil = Date.now() + 250;
       const activeId = String(event.active.id);
-      if (activeId.startsWith(GROUP_DRAG_PREFIX)) {
+      const activeGroupId = event.active.data.current?.groupId;
+      if (dragKindOf(event.active) === "group" && typeof activeGroupId === "string") {
         const over = event.over ? parseClaudeSidebarDropId(String(event.over.id)) : null;
         if (over?.kind !== "group") return;
+        // Indexes in the full list, hidden groups included, so a move lands
+        // right before or after the group it was dropped on.
         const toIndex = useThreadGroupsStore
           .getState()
           .groups.findIndex((group) => group.id === over.groupId);
-        if (toIndex !== -1) moveGroup(activeId.slice(GROUP_DRAG_PREFIX.length), toIndex);
+        if (toIndex !== -1) moveGroup(activeGroupId, toIndex);
         return;
       }
       const threadKey = activeId;
       const thread = threadByKeyRef.current.get(threadKey);
-      const target = event.over ? parseClaudeSidebarDropId(String(event.over.id)) : null;
+      const slot = rowDropSlot(event);
+      const target: ClaudeSidebarDropTarget | null = slot
+        ? { kind: "group", groupId: slot.groupId }
+        : event.over
+          ? parseClaudeSidebarDropId(String(event.over.id))
+          : null;
       if (!thread || !target) return;
       const plan = planClaudeSidebarDrop({
         isPinned: thread.pinnedAt != null,
@@ -1258,7 +1444,14 @@ export default function ClaudeSidebar() {
         currentGroupId: useThreadGroupsStore.getState().groupIdByThreadKey[threadKey] ?? null,
         target,
       });
-      if (!plan) return;
+      // Read before the move below, which can drop the thread from its old group.
+      const placed = slot
+        ? placeThreadKey(shownGroupOrder(slot.groupId), threadKey, slot.threadKey, slot.edge)
+        : null;
+      if (!plan) {
+        if (slot && placed) setGroupThreadOrder(slot.groupId, placed);
+        return;
+      }
       const threadRef = scopeThreadRef(thread.environmentId, thread.id);
       const capabilities = serverConfigs.get(thread.environmentId)?.environment.capabilities;
       if ((plan.pin || plan.unpin) && capabilities?.threadPinning !== true) {
@@ -1270,6 +1463,7 @@ export default function ClaudeSidebar() {
         return;
       }
       moveThreadToGroup(threadKey, plan.groupId);
+      if (slot && placed) setGroupThreadOrder(slot.groupId, placed);
       void (async () => {
         if (plan.unsettle) {
           toastFailure("Failed to un-settle thread", await unsettleThread(threadRef));
@@ -1285,17 +1479,59 @@ export default function ClaudeSidebar() {
       moveThreadToGroup,
       pinThread,
       serverConfigs,
+      setGroupThreadOrder,
       settleThread,
+      shownGroupOrder,
       unpinThread,
       unsettleThread,
     ],
   );
+  // Targets follow the pointer, not how much of the lifted row overlaps
+  // them, so a drop goes exactly where you point. Group drags only land on
+  // groups. A thread over a group snaps to its nearest row, so the gaps
+  // between rows and the header never make the slot flicker; anywhere else
+  // it lands on the whole section.
+  const collisionDetection = useCallback<CollisionDetection>((args) => {
+    const only = (kinds: readonly SidebarDragKind[]) =>
+      args.droppableContainers.filter((container) => {
+        const kind = dragKindOf(container);
+        return kind !== undefined && kinds.includes(kind);
+      });
+    const within = (kinds: readonly SidebarDragKind[]) =>
+      pointerWithin({ ...args, droppableContainers: only(kinds) });
+    if (dragKindOf(args.active) === "group") {
+      const hits = within(["group"]);
+      return hits.length > 0
+        ? hits
+        : closestCenter({ ...args, droppableContainers: only(["group"]) });
+    }
+    const rowHits = within(["row"]);
+    if (rowHits.length > 0) return rowHits;
+    const sectionHit = within(["group", "section"])[0];
+    if (!sectionHit)
+      return rectIntersection({ ...args, droppableContainers: only(["group", "section"]) });
+    const hitGroupId = args.droppableContainers.find((c) => c.id === sectionHit.id)?.data.current
+      ?.groupId;
+    const groupRows =
+      typeof hitGroupId === "string"
+        ? only(["row"]).filter((container) => container.data.current?.groupId === hitGroupId)
+        : [];
+    return groupRows.length > 0
+      ? closestCenter({ ...args, droppableContainers: groupRows })
+      : [sectionHit];
+  }, []);
   const dragActive = draggingThreadKey !== null;
+  const groupSortIds = useMemo(
+    () =>
+      sections.groups.map(({ group }) => claudeSidebarDropId({ kind: "group", groupId: group.id })),
+    [sections.groups],
+  );
 
   const renderRow = (
     thread: SidebarThreadSummary,
     guide: ThreadRowGuide,
     children?: React.ReactNode,
+    reorderGroupId: string | null = null,
   ) => {
     const threadKey = threadKeyOf(thread);
     return (
@@ -1309,6 +1545,8 @@ export default function ClaudeSidebar() {
         place={placeByEnvironment.get(thread.environmentId)}
         guide={guide}
         draggable={guide === null}
+        reorderGroupId={reorderGroupId}
+        dropEdge={dropSlot?.threadKey === threadKey && !dropSlot.sameList ? dropSlot.edge : null}
         isActive={routeThreadKey === threadKey}
         isMenuOpen={menuThreadKey === threadKey}
         isRenaming={renamingThreadKey === threadKey}
@@ -1322,7 +1560,7 @@ export default function ClaudeSidebar() {
       </ClaudeThreadRow>
     );
   };
-  const renderRows = (rows: readonly SidebarThreadSummary[]) =>
+  const renderRows = (rows: readonly SidebarThreadSummary[], groupId: string | null = null) =>
     rows.map((thread) => {
       const children = sections.childrenByKey.get(threadKeyOf(thread));
       return renderRow(
@@ -1335,6 +1573,7 @@ export default function ClaudeSidebar() {
             )}
           </ul>
         ) : null,
+        groupId,
       );
     });
 
@@ -1351,11 +1590,13 @@ export default function ClaudeSidebar() {
           <DndContext
             sensors={dragSensors}
             modifiers={[restrictToVerticalAxis]}
+            collisionDetection={collisionDetection}
             onDragStart={handleDragStart}
+            onDragMove={handleDragMove}
             onDragEnd={handleDragEnd}
             onDragCancel={() => {
               setDraggingThreadKey(null);
-              setDraggingGroupId(null);
+              setDropSlot(null);
             }}
           >
             <SidebarGroup className="flex-1" role="presentation">
@@ -1403,52 +1644,55 @@ export default function ClaudeSidebar() {
                 </DropSection>
               ) : null}
 
-              {sections.groups.map(({ group, threads: groupThreads }, groupIndex) => (
-                <DropSection
-                  key={group.id}
-                  target={{ kind: "group", groupId: group.id }}
-                  label={group.name}
-                  dragActive={dragActive}
-                  groupIndex={groupIndex}
-                  draggingGroupIndex={draggingGroupIndex}
-                >
-                  <DraggableGroupHeader
-                    groupId={group.id}
-                    label={group.name}
-                    collapsed={group.collapsed}
-                    onToggle={() => {
-                      if (Date.now() < suppressRowClickUntil) return;
-                      toggleGroup(group.id);
+              <SortableContext items={groupSortIds} strategy={verticalListSortingStrategy}>
+                {sections.groups.map(({ group, threads: groupThreads }) => (
+                  <GroupSection
+                    key={group.id}
+                    group={group}
+                    threadDragActive={dragActive}
+                    targeted={dropSlot?.groupId === group.id}
+                    header={{
+                      onToggle: () => {
+                        if (Date.now() < suppressRowClickUntil) return;
+                        toggleGroup(group.id);
+                      },
+                      onMenu: (position) => handleGroupMenu(group, position),
+                      renaming:
+                        renamingGroupId === group.id
+                          ? {
+                              onCommit: (name) => {
+                                setRenamingGroupId(null);
+                                setNewGroupId(null);
+                                if (name.trim()) renameGroup(group.id, name.trim());
+                              },
+                              onCancel: () => {
+                                setRenamingGroupId(null);
+                                if (newGroupId === group.id) deleteGroup(group.id);
+                                setNewGroupId(null);
+                              },
+                            }
+                          : undefined,
                     }}
-                    onMenu={(position) => handleGroupMenu(group, position)}
-                    renaming={
-                      renamingGroupId === group.id
-                        ? {
-                            onCommit: (name) => {
-                              setRenamingGroupId(null);
-                              setNewGroupId(null);
-                              if (name.trim()) renameGroup(group.id, name.trim());
-                            },
-                            onCancel: () => {
-                              setRenamingGroupId(null);
-                              if (newGroupId === group.id) deleteGroup(group.id);
-                              setNewGroupId(null);
-                            },
-                          }
-                        : undefined
-                    }
-                  />
-                  <Collapse open={!group.collapsed}>
-                    {groupThreads.length > 0 ? (
-                      <ul className="flex flex-col gap-px">{renderRows(groupThreads)}</ul>
-                    ) : (
-                      <p className="px-2.5 py-1 text-xs text-muted-foreground/50">
-                        Drag a thread here
-                      </p>
-                    )}
-                  </Collapse>
-                </DropSection>
-              ))}
+                  >
+                    <Collapse open={!group.collapsed}>
+                      {groupThreads.length > 0 ? (
+                        <SortableContext
+                          items={groupThreads.map(threadKeyOf)}
+                          strategy={verticalListSortingStrategy}
+                        >
+                          <ul className="flex flex-col gap-px">
+                            {renderRows(groupThreads, group.id)}
+                          </ul>
+                        </SortableContext>
+                      ) : (
+                        <p className="mx-1 rounded-md border border-dashed border-transparent px-1.5 py-1 text-xs text-muted-foreground/50 transition-colors duration-150 group-data-[targeted]/claude-drop:border-sidebar-border group-data-[targeted]/claude-drop:text-sidebar-foreground/70">
+                          Drag a thread here
+                        </p>
+                      )}
+                    </Collapse>
+                  </GroupSection>
+                ))}
+              </SortableContext>
 
               <DropSection target={{ kind: "recents" }} label="Recents" dragActive={dragActive}>
                 <SectionHeader
@@ -1546,7 +1790,7 @@ export default function ClaudeSidebar() {
                   className={cn(
                     rowClassName,
                     "pr-1.5",
-                    "cursor-grabbing bg-sidebar-row-active text-sidebar-foreground shadow-lg ring-1 ring-sidebar-border",
+                    "animate-sidebar-lift cursor-grabbing bg-sidebar-row-active text-sidebar-foreground ring-1 ring-sidebar-border motion-reduce:animate-none motion-reduce:shadow-lg",
                   )}
                 >
                   <ThreadRowBody
@@ -1562,7 +1806,7 @@ export default function ClaudeSidebar() {
                   />
                 </div>
               ) : overlayGroup ? (
-                <div className="flex h-7 cursor-grabbing items-center gap-1 rounded-md bg-sidebar-row-active pl-2.5 text-xs text-sidebar-foreground shadow-lg ring-1 ring-sidebar-border">
+                <div className="flex h-7 animate-sidebar-lift cursor-grabbing items-center gap-1 rounded-md bg-sidebar-row-active pl-2.5 text-xs text-sidebar-foreground ring-1 ring-sidebar-border motion-reduce:animate-none motion-reduce:shadow-lg">
                   <ChevronRightIcon
                     aria-hidden
                     className={cn("size-3 shrink-0", !overlayGroup.collapsed && "rotate-90")}

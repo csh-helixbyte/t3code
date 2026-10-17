@@ -86,6 +86,7 @@ export function threadActivityMs(
 
 export interface ClaudeSidebarSections<T> {
   readonly pinned: T[];
+  /** Visible groups only; a hidden group and its threads are left out entirely. */
   readonly groups: { readonly group: ThreadGroup; readonly threads: T[] }[];
   readonly recents: T[];
   /** Settled threads, hidden behind the collapsed Settled section. */
@@ -100,7 +101,9 @@ export interface ClaudeSidebarSections<T> {
  * group; a thread assigned to a group that no longer exists falls
  * back to Recents. A thread with a visible parent (`parentKey`) nests one
  * level deep under its top-most visible ancestor and follows it between
- * sections. Every list is most recent activity first.
+ * sections. Every list is most recent activity first, except a group the user
+ * has ordered by hand (`threadOrderByGroupId`): its ordered threads keep that
+ * order, below any it gained since.
  */
 export function partitionClaudeSidebar<
   T extends Pick<
@@ -114,6 +117,7 @@ export function partitionClaudeSidebar<
   isSettled?: (thread: T) => boolean;
   groups: readonly ThreadGroup[];
   groupIdByThreadKey: Readonly<Record<string, string>>;
+  threadOrderByGroupId?: Readonly<Record<string, readonly string[]>>;
 }): ClaudeSidebarSections<T> {
   const byActivity = (left: T, right: T) => threadActivityMs(right) - threadActivityMs(left);
   const sorted = input.threads.filter((thread) => thread.archivedAt == null).toSorted(byActivity);
@@ -157,13 +161,45 @@ export function partitionClaudeSidebar<
     const bucket = groupId === undefined ? undefined : groupThreads.get(groupId);
     (bucket ?? recents).push(thread);
   }
+  const inGroupOrder = (group: ThreadGroup): T[] => {
+    const threads = groupThreads.get(group.id)!;
+    const order = input.threadOrderByGroupId?.[group.id];
+    if (!order?.length) return threads;
+    const rank = new Map(order.map((key, index) => [key, index] as const));
+    // Stable sort: unranked newcomers (-1) stay on top, newest first.
+    return threads.toSorted(
+      (left, right) =>
+        (rank.get(input.threadKey(left)) ?? -1) - (rank.get(input.threadKey(right)) ?? -1),
+    );
+  };
   return {
     pinned,
-    groups: input.groups.map((group) => ({ group, threads: groupThreads.get(group.id)! })),
+    groups: input.groups
+      .filter((group) => !group.hidden)
+      .map((group) => ({ group, threads: inGroupOrder(group) })),
     recents,
     settled,
     childrenByKey,
   };
+}
+
+/**
+ * A group's thread order after dropping `threadKey` just before or after
+ * `anchorKey`. `order` is the group's order as shown; the dragged thread may
+ * come from elsewhere. An anchor that is missing or the thread itself leaves
+ * the order as shown.
+ */
+export function placeThreadKey(
+  order: readonly string[],
+  threadKey: string,
+  anchorKey: string,
+  edge: "before" | "after",
+): string[] {
+  const next = order.filter((key) => key !== threadKey);
+  const anchor = next.indexOf(anchorKey);
+  if (anchor === -1) return [...order];
+  next.splice(edge === "before" ? anchor : anchor + 1, 0, threadKey);
+  return next;
 }
 
 /** Where a dragged top-level thread was dropped. */

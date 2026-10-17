@@ -12,6 +12,8 @@ export interface ThreadGroup {
   readonly id: string;
   readonly name: string;
   readonly collapsed: boolean;
+  /** Hidden groups and their threads leave the sidebar until shown again. */
+  readonly hidden?: boolean;
 }
 
 /**
@@ -35,6 +37,11 @@ interface ThreadGroupsState {
   groups: ThreadGroup[];
   /** Scoped thread key → group id. Threads without an entry sit in Recents. */
   groupIdByThreadKey: Record<string, string>;
+  /**
+   * Group id → its threads' keys in the order the user dragged them into.
+   * Threads a group gains afterwards sit above these, newest first.
+   */
+  threadOrderByGroupId: Record<string, string[]>;
   pinnedCollapsed: boolean;
   recentsCollapsed: boolean;
   settledCollapsed: boolean;
@@ -45,6 +52,8 @@ interface ThreadGroupsStore extends ThreadGroupsState {
   renameGroup: (groupId: string, name: string) => void;
   deleteGroup: (groupId: string) => void;
   toggleGroup: (groupId: string) => void;
+  setGroupHidden: (groupId: string, hidden: boolean) => void;
+  setGroupThreadOrder: (groupId: string, threadKeys: readonly string[]) => void;
   moveGroup: (groupId: string, toIndex: number) => void;
   moveThreadToGroup: (threadKey: string, groupId: string | null) => void;
   togglePinned: () => void;
@@ -57,6 +66,7 @@ export const useThreadGroupsStore = create<ThreadGroupsStore>()(
     (set, get) => ({
       groups: [],
       groupIdByThreadKey: {},
+      threadOrderByGroupId: {},
       pinnedCollapsed: false,
       recentsCollapsed: false,
       settledCollapsed: true,
@@ -72,28 +82,56 @@ export const useThreadGroupsStore = create<ThreadGroupsStore>()(
         })),
       // Deleting a group never touches its threads: they fall back to Recents.
       deleteGroup: (groupId) =>
-        set((state) => ({
-          groups: state.groups.filter((group) => group.id !== groupId),
-          groupIdByThreadKey: Object.fromEntries(
-            Object.entries(state.groupIdByThreadKey).filter(([, id]) => id !== groupId),
-          ),
-        })),
+        set((state) => {
+          const { [groupId]: _order, ...threadOrderByGroupId } = state.threadOrderByGroupId;
+          return {
+            groups: state.groups.filter((group) => group.id !== groupId),
+            groupIdByThreadKey: Object.fromEntries(
+              Object.entries(state.groupIdByThreadKey).filter(([, id]) => id !== groupId),
+            ),
+            threadOrderByGroupId,
+          };
+        }),
       toggleGroup: (groupId) =>
         set((state) => ({
           groups: state.groups.map((group) =>
             group.id === groupId ? { ...group, collapsed: !group.collapsed } : group,
           ),
         })),
+      setGroupHidden: (groupId, hidden) =>
+        set((state) => ({
+          groups: state.groups.map((group) =>
+            group.id === groupId ? { ...group, hidden } : group,
+          ),
+        })),
+      setGroupThreadOrder: (groupId, threadKeys) =>
+        set((state) => ({
+          threadOrderByGroupId: { ...state.threadOrderByGroupId, [groupId]: [...threadKeys] },
+        })),
       moveGroup: (groupId, toIndex) =>
         set((state) => {
           const groups = reorderThreadGroups(state.groups, groupId, toIndex);
           return groups === state.groups ? state : { groups: [...groups] };
         }),
+      // A thread leaving a group forgets its place there, so coming back puts
+      // it on top like any new arrival.
       moveThreadToGroup: (threadKey, groupId) =>
         set((state) => {
-          const { [threadKey]: _previous, ...rest } = state.groupIdByThreadKey;
+          const { [threadKey]: previous, ...rest } = state.groupIdByThreadKey;
+          const previousOrder =
+            previous === undefined || previous === groupId
+              ? undefined
+              : state.threadOrderByGroupId[previous];
           return {
             groupIdByThreadKey: groupId === null ? rest : { ...rest, [threadKey]: groupId },
+            ...(previousOrder && previous !== undefined
+              ? {
+                  threadOrderByGroupId: {
+                    ...state.threadOrderByGroupId,
+                    [previous]: previousOrder.filter((key) => key !== threadKey),
+                  },
+                }
+              : {}),
           };
         }),
       togglePinned: () => set((state) => ({ pinnedCollapsed: !state.pinnedCollapsed })),
@@ -109,6 +147,7 @@ export const useThreadGroupsStore = create<ThreadGroupsStore>()(
       partialize: (state): ThreadGroupsState => ({
         groups: state.groups,
         groupIdByThreadKey: state.groupIdByThreadKey,
+        threadOrderByGroupId: state.threadOrderByGroupId,
         pinnedCollapsed: state.pinnedCollapsed,
         recentsCollapsed: state.recentsCollapsed,
         settledCollapsed: state.settledCollapsed,

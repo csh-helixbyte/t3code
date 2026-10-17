@@ -4,6 +4,7 @@ import type { ThreadGroup } from "../threadGroupsStore";
 import {
   isHiddenSidebarThread,
   partitionClaudeSidebar,
+  placeThreadKey,
   sidebarParentThreadId,
   planClaudeSidebarDrop,
   resolveClaudeSidebarDot,
@@ -163,6 +164,50 @@ describe("partitionClaudeSidebar", () => {
     expect(sections.groups[0]!.threads.map((t) => t.id)).toEqual(["root"]);
     expect(sections.childrenByKey.get("root")!.map((t) => t.id)).toEqual(["grandchild", "child"]);
     expect(sections.recents.map((t) => t.id)).toEqual(["lost"]);
+  });
+
+  it("keeps a hand-ordered group in its order, with newcomers on top", () => {
+    const sections = partitionClaudeSidebar({
+      threads: [
+        thread("a", "2026-01-01T00:00:00.000Z"),
+        thread("b", "2026-01-02T00:00:00.000Z"),
+        thread("c", "2026-01-03T00:00:00.000Z"),
+        thread("new1", "2026-01-04T00:00:00.000Z"),
+        thread("new2", "2026-01-05T00:00:00.000Z"),
+      ],
+      threadKey: (t) => t.id,
+      groups,
+      groupIdByThreadKey: { a: "g1", b: "g1", c: "g1", new1: "g1", new2: "g1" },
+      threadOrderByGroupId: { g1: ["a", "gone", "c", "b"] },
+    });
+    expect(sections.groups[0]!.threads.map((t) => t.id)).toEqual(["new2", "new1", "a", "c", "b"]);
+  });
+
+  it("leaves hidden groups and their threads out instead of moving them to Recents", () => {
+    const sections = partitionClaudeSidebar({
+      threads: [
+        thread("kept", "2026-01-01T00:00:00.000Z"),
+        thread("loose", "2026-01-02T00:00:00.000Z"),
+      ],
+      threadKey: (t) => t.id,
+      groups: [...groups, { id: "g2", name: "Proposals", collapsed: false, hidden: true }],
+      groupIdByThreadKey: { kept: "g2" },
+    });
+    expect(sections.groups.map(({ group }) => group.id)).toEqual(["g1"]);
+    expect(sections.recents.map((t) => t.id)).toEqual(["loose"]);
+  });
+});
+
+describe("placeThreadKey", () => {
+  it("drops a thread before or after its anchor, from inside or outside the group", () => {
+    expect(placeThreadKey(["a", "b", "c"], "c", "a", "before")).toEqual(["c", "a", "b"]);
+    expect(placeThreadKey(["a", "b", "c"], "a", "b", "after")).toEqual(["b", "a", "c"]);
+    expect(placeThreadKey(["a", "b"], "x", "a", "after")).toEqual(["a", "x", "b"]);
+  });
+
+  it("keeps the shown order when the anchor is missing or the thread itself", () => {
+    expect(placeThreadKey(["a", "b"], "a", "a", "after")).toEqual(["a", "b"]);
+    expect(placeThreadKey(["a", "b"], "x", "gone", "before")).toEqual(["a", "b"]);
   });
 });
 
