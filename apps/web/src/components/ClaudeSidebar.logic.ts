@@ -16,6 +16,12 @@ import {
  */
 export type ClaudeSidebarDot = "working" | "attention" | "failed" | "unread";
 
+function isAgentTurnActive(status: string | undefined) {
+  return (
+    status === "running" || status === "preparing" || status === "starting" || status === "queued"
+  );
+}
+
 /**
  * A delegated subthread is started by the agent, so it may finish without you
  * ever opening it; with no visit to compare against it still counts as unread.
@@ -27,6 +33,15 @@ export function resolveClaudeSidebarDot(
   const status = resolveSidebarThreadStatus(thread);
   if (status === "approval" || status === "input") return "attention";
   if (status === "failed" || status === "limited") return "failed";
+  // A proposed plan needs you as soon as the agent's turn ends, even while the
+  // run is still checkpointing or background work keeps it from settling.
+  if (
+    thread.interactionMode === "plan" &&
+    thread.hasActionableProposedPlan &&
+    !isAgentTurnActive(thread.runtime?.status)
+  ) {
+    return "attention";
+  }
   switch (resolveThreadStatusPill({ thread })?.label) {
     case "Working":
     case "Connecting":

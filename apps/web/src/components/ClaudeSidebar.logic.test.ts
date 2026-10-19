@@ -69,6 +69,25 @@ describe("resolveClaudeSidebarDot", () => {
     expect(resolveClaudeSidebarDot({ ...plan, hasActionableProposedPlan: false })).toBeNull();
   });
 
+  it("asks for attention on a proposed plan while the finished run still drains", () => {
+    const plan = {
+      ...baseStatus,
+      interactionMode: "plan" as const,
+      hasActionableProposedPlan: true,
+    };
+    // Checkpoint capture after the turn, or background work holding completion.
+    expect(
+      resolveClaudeSidebarDot({ ...plan, runtime: { status: "waiting" } as DotInput["runtime"] }),
+    ).toBe("attention");
+    expect(
+      resolveClaudeSidebarDot({ ...plan, runtime: { status: "idle" } as DotInput["runtime"] }),
+    ).toBe("attention");
+    // A new turn refining the plan is work again.
+    expect(
+      resolveClaudeSidebarDot({ ...plan, runtime: { status: "running" } as DotInput["runtime"] }),
+    ).toBe("working");
+  });
+
   it("marks a finished delegated subthread unread until it is first opened", () => {
     const subthread = {
       ...baseStatus,
