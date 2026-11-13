@@ -132,6 +132,8 @@ interface FilePreviewPanelProps {
   onPendingChange: (relativePath: string, pending: boolean) => void;
   selectedFilePending: boolean;
   workspaceMutationId: string | null;
+  /** HelixByte fork: sends an HTML render's `ui/message` text as a user message in this thread. */
+  onSendRenderMessage?: ((text: string) => Promise<void>) | undefined;
 }
 
 const FILE_EXPLORER_STORAGE_KEY = "t3code.fileExplorerOpen";
@@ -1041,6 +1043,7 @@ export default function FilePreviewPanel({
   onPendingChange,
   selectedFilePending,
   workspaceMutationId,
+  onSendRenderMessage,
 }: FilePreviewPanelProps) {
   const relativePath =
     attachment === undefined ? resolveFilePreviewPath(requestedPath, cwd) : requestedPath;
@@ -1352,6 +1355,7 @@ export default function FilePreviewPanel({
               sizeBytes={attachment.sizeBytes}
               asset={{ environmentId, attachmentId: attachment.id }}
               htmlRender={attachment.htmlRender === true}
+              onSendMessage={onSendRenderMessage}
             />
           ) : relativePath && isVideo && absolutePath ? (
             <WorkspaceVideoPreview

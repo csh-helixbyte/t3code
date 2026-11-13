@@ -2,6 +2,8 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   HTML_RENDER_MAX_HEIGHT,
+  HTML_RENDER_MAX_MESSAGE_LENGTH,
+  htmlRenderError,
   htmlRenderFrameHeight,
   htmlRenderReferencesEqual,
   htmlRenderTheme,
@@ -10,6 +12,7 @@ import {
   htmlRenderThemeMessage,
   readHtmlRenderContentHeight,
   readHtmlRenderLinkRequest,
+  readHtmlRenderMessageRequest,
   readHtmlRenderReference,
 } from "./htmlRender.ts";
 import { T3_CODE_DARK_THEME_COLORS, T3_CODE_LIGHT_THEME_COLORS } from "./themePalettes.ts";
@@ -98,6 +101,80 @@ describe("readHtmlRenderLinkRequest", () => {
     expect(
       readHtmlRenderLinkRequest({ type: "t3-html-render-link", url: "https://example.com" }),
     ).toBeUndefined();
+  });
+});
+
+describe("readHtmlRenderMessageRequest", () => {
+  const message = (content: unknown, overrides: Record<string, unknown> = {}) => ({
+    jsonrpc: "2.0",
+    id: "c-1",
+    method: "ui/message",
+    params: { role: "user", content },
+    ...overrides,
+  });
+
+  it("reads the text of one block or an array of blocks", () => {
+    expect(
+      readHtmlRenderMessageRequest(message({ type: "text", text: "  Fix the title \n" })),
+    ).toEqual({
+      id: "c-1",
+      text: "Fix the title",
+    });
+    expect(
+      readHtmlRenderMessageRequest(
+        message(
+          [
+            { type: "text", text: "On the chart:" },
+            { type: "text", text: "use weeks" },
+          ],
+          { id: 7 },
+        ),
+      ),
+    ).toEqual({ id: 7, text: "On the chart:\n\nuse weeks" });
+  });
+
+  it("rejects text that is empty or over the limit", () => {
+    expect(readHtmlRenderMessageRequest(message({ type: "text", text: " \n " }))).toBeUndefined();
+    expect(readHtmlRenderMessageRequest(message([]))).toBeUndefined();
+    expect(
+      readHtmlRenderMessageRequest(
+        message({ type: "text", text: "x".repeat(HTML_RENDER_MAX_MESSAGE_LENGTH) }),
+      )?.text,
+    ).toHaveLength(HTML_RENDER_MAX_MESSAGE_LENGTH);
+    expect(
+      readHtmlRenderMessageRequest(
+        message({ type: "text", text: "x".repeat(HTML_RENDER_MAX_MESSAGE_LENGTH + 1) }),
+      ),
+    ).toBeUndefined();
+  });
+
+  it("rejects other methods, roles, block types and ids", () => {
+    const content = { type: "text", text: "hi" };
+    expect(
+      readHtmlRenderMessageRequest(message(content, { method: "ui/open-link" })),
+    ).toBeUndefined();
+    expect(readHtmlRenderMessageRequest(message(content, { jsonrpc: "1.0" }))).toBeUndefined();
+    expect(readHtmlRenderMessageRequest(message(content, { id: undefined }))).toBeUndefined();
+    expect(readHtmlRenderMessageRequest(message(content, { id: null }))).toBeUndefined();
+    expect(readHtmlRenderMessageRequest(message(content, { id: { n: 1 } }))).toBeUndefined();
+    expect(
+      readHtmlRenderMessageRequest(message(content, { params: { role: "assistant", content } })),
+    ).toBeUndefined();
+    expect(readHtmlRenderMessageRequest(message("hi"))).toBeUndefined();
+    expect(
+      readHtmlRenderMessageRequest(message([content, { type: "image", data: "x" }])),
+    ).toBeUndefined();
+    expect(readHtmlRenderMessageRequest(message({ type: "text", text: 5 }))).toBeUndefined();
+  });
+});
+
+describe("htmlRenderError", () => {
+  it("is a JSON-RPC error reply for the request's id", () => {
+    expect(htmlRenderError("c-1", "Not available")).toEqual({
+      jsonrpc: "2.0",
+      id: "c-1",
+      error: { code: -32000, message: "Not available" },
+    });
   });
 });
 

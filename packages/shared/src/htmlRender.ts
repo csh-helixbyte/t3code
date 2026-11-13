@@ -273,6 +273,10 @@ export const HTML_RENDER_LAYOUT_GUIDE = [
 // MCP apps: https://github.com/modelcontextprotocol/ext-apps
 const HOST_CONTEXT_CHANGED_METHOD = "ui/notifications/host-context-changed";
 const OPEN_LINK_METHOD = "ui/open-link";
+// HelixByte fork: a render can ask its client to send a user message.
+const MESSAGE_METHOD = "ui/message";
+/** The longest text a render's `ui/message` request may carry. */
+export const HTML_RENDER_MAX_MESSAGE_LENGTH = 8000;
 const SIZE_CHANGED_METHOD = "ui/notifications/size-changed";
 
 /** The content height in a framed render's `ui/notifications/size-changed` notification. */
@@ -300,9 +304,40 @@ export function readHtmlRenderLinkRequest(
   return typeof url === "string" && /^https?:\/\//i.test(url) ? { id, url } : undefined;
 }
 
+/**
+ * HelixByte fork: a render's `ui/message` request, asking its client to send
+ * `text` as a user message in the render's thread. The content is one text
+ * block or an array of them, as MCP Apps send it; blocks join as paragraphs.
+ */
+export function readHtmlRenderMessageRequest(
+  data: unknown,
+): { readonly id: string | number; readonly text: string } | undefined {
+  if (typeof data !== "object" || data === null) return undefined;
+  const { jsonrpc, id, method, params } = data as Record<string, unknown>;
+  if (jsonrpc !== "2.0" || method !== MESSAGE_METHOD) return undefined;
+  if (typeof id !== "string" && typeof id !== "number") return undefined;
+  if (typeof params !== "object" || params === null) return undefined;
+  const { role, content } = params as Record<string, unknown>;
+  if (role !== "user") return undefined;
+  const blocks: ReadonlyArray<unknown> = Array.isArray(content) ? content : [content];
+  const texts = blocks.flatMap((block) => {
+    if (typeof block !== "object" || block === null) return [];
+    const { type, text } = block as Record<string, unknown>;
+    return type === "text" && typeof text === "string" ? [text] : [];
+  });
+  if (texts.length === 0 || texts.length !== blocks.length) return undefined;
+  const text = texts.join("\n\n").trim();
+  return text === "" || text.length > HTML_RENDER_MAX_MESSAGE_LENGTH ? undefined : { id, text };
+}
+
 /** The empty result a client sends back for a render's request. */
 export function htmlRenderResult(id: string | number) {
   return { jsonrpc: "2.0", id, result: {} } as const;
+}
+
+/** HelixByte fork: the error a client sends back for a render's request it did not carry out. */
+export function htmlRenderError(id: string | number, message: string) {
+  return { jsonrpc: "2.0", id, error: { code: -32000, message } } as const;
 }
 
 const THEME_FRAGMENT_KEY = "t3-theme";

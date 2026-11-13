@@ -4645,6 +4645,7 @@ export default function ChatView(props: ChatViewProps) {
   );
   // An MCP App's approved `ui/message`: queued like a typed message, so it
   // never steers or interrupts a running turn.
+  // HelixByte fork: an HTML render's `ui/message` takes the same path.
   const sendAppMessage = useCallback(
     async (text: string) => {
       if (!isServerThread || activeThreadId === null) {
@@ -11247,6 +11248,7 @@ export default function ChatView(props: ChatViewProps) {
             pendingFileSurfaceIds.has(renderedRightPanelSurface.id)
           }
           workspaceMutationId={workspaceMutationId}
+          onSendRenderMessage={sendAppMessage}
         />
       </Suspense>
     ) : null

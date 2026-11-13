@@ -1,9 +1,11 @@
 import {
+  htmlRenderError,
   htmlRenderThemeFragment,
   htmlRenderThemeMessage,
   htmlRenderResult,
   readHtmlRenderContentHeight,
   readHtmlRenderLinkRequest,
+  readHtmlRenderMessageRequest,
 } from "@t3tools/shared/htmlRender";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
@@ -32,6 +34,8 @@ export function BrowserDocumentFrame(props: {
   readonly title: string;
   readonly pdf: boolean;
   readonly htmlRender?: boolean;
+  /** HelixByte fork: sends an HTML render's `ui/message` text to its thread. */
+  readonly onSendMessage?: ((text: string) => void | Promise<void>) | undefined;
 }) {
   const className = "min-h-0 flex-1 border-0 bg-white";
   return props.pdf ? (
@@ -48,6 +52,7 @@ export function BrowserDocumentFrame(props: {
       src={props.src}
       title={props.title}
       className="min-h-0 flex-1"
+      onSendMessage={props.onSendMessage}
     />
   ) : (
     <iframe
@@ -72,6 +77,12 @@ export function HtmlRenderDocument(props: {
   readonly className?: string;
   /** Receives the page's content height whenever it changes, so an inline frame can fit it. */
   readonly onContentHeight?: (height: number) => void;
+  /**
+   * HelixByte fork: sends the text of the page's `ui/message` request as a user
+   * message in the thread the page belongs to. Left out where there is no such
+   * thread; the page is then told the message was not sent.
+   */
+  readonly onSendMessage?: ((text: string) => void | Promise<void>) | undefined;
 }) {
   const theme = useHtmlRenderTheme();
   const frameRef = useRef<HTMLIFrameElement>(null);
@@ -105,7 +116,51 @@ export function HtmlRenderDocument(props: {
     window.addEventListener("message", openLink);
     return () => window.removeEventListener("message", openLink);
   }, []);
-  const { onContentHeight } = props;
+  const { onContentHeight, onSendMessage } = props;
+  // HelixByte fork: a page's own Send button (a comment on part of the page)
+  // asks the client to send its text to the thread. The reader's click on that
+  // button is the approval, so the request is honoured under the same guard as
+  // a link: this frame has focus and the reader has just used the app. Every
+  // well-formed request from this frame gets a reply, so a page that is
+  // refused can fall back to copying the text. One message sends at a time, so
+  // a double click or a page posting in a loop cannot flood the thread.
+  const sendingMessage = useRef(false);
+  useEffect(() => {
+    const sendMessage = (event: MessageEvent) => {
+      const frame = frameRef.current;
+      const request = readHtmlRenderMessageRequest(event.data);
+      if (request === undefined || frame === null || event.source !== frame.contentWindow) {
+        return;
+      }
+      const refuse = (message: string) =>
+        frame.contentWindow?.postMessage(htmlRenderError(request.id, message), "*");
+      if (document.activeElement !== frame || navigator.userActivation?.isActive === false) {
+        refuse("Messages send only from a click in the page.");
+        return;
+      }
+      if (onSendMessage === undefined) {
+        refuse("Messages cannot be sent from here.");
+        return;
+      }
+      if (sendingMessage.current) {
+        refuse("Another message is still sending.");
+        return;
+      }
+      sendingMessage.current = true;
+      void Promise.resolve()
+        .then(() => onSendMessage(request.text))
+        .then(
+          () => frame.contentWindow?.postMessage(htmlRenderResult(request.id), "*"),
+          (cause: unknown) =>
+            refuse(cause instanceof Error ? cause.message : "Could not send the message."),
+        )
+        .finally(() => {
+          sendingMessage.current = false;
+        });
+    };
+    window.addEventListener("message", sendMessage);
+    return () => window.removeEventListener("message", sendMessage);
+  }, [onSendMessage]);
   // A page posts its height once per change, so listen from the commit that
   // inserts the frame; a passive effect could run after a fast page's first post.
   useLayoutEffect(() => {

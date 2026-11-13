@@ -328,7 +328,10 @@ interface TimelineRowSharedState {
   activeThreadEnvironmentId: EnvironmentId;
   onRevertToTurnCount: (targetTurnCount: number, messageId: MessageId) => void;
   onUseArtifactTemplate: (template: CodexArtifactTemplate) => void;
-  /** Sends text an MCP App asked to post, after the user approved it. */
+  /**
+   * Sends text an MCP App asked to post, after the user approved it.
+   * HelixByte fork: also text an HTML render's own Send button asked to post.
+   */
   onSendAppMessage: ((text: string) => Promise<void>) | undefined;
   /**
    * An MCP App row entering or leaving full screen. The row stays rendered
@@ -3046,6 +3049,7 @@ function HtmlRenderTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "htm
         environmentId={ctx.activeThreadEnvironmentId}
         htmlRender={row.htmlRender}
         onOpen={ctx.onFileOpen}
+        onSendMessage={ctx.onSendAppMessage}
       />
     </div>
   );

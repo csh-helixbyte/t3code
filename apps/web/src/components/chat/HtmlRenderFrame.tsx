@@ -29,6 +29,8 @@ export function HtmlRenderFrame(props: {
   readonly environmentId: EnvironmentId;
   readonly htmlRender: HtmlRenderReference;
   readonly onOpen: (attachment: ChatFileAttachment) => void;
+  /** HelixByte fork: sends the page's `ui/message` text as a user message in this thread. */
+  readonly onSendMessage: ((text: string) => Promise<void>) | undefined;
 }) {
   const { attachmentId, title } = props.htmlRender;
   // The frame takes the page's measured height at its own width, read before
@@ -99,6 +101,7 @@ export function HtmlRenderFrame(props: {
             title={title}
             className="block size-full"
             onContentHeight={setContentHeight}
+            onSendMessage={props.onSendMessage}
           />
           <div className="absolute end-2 top-2 opacity-0 transition-opacity duration-150 focus-within:opacity-100 group-hover/html-render:opacity-100 pointer-coarse:opacity-100">
             <Tooltip>
