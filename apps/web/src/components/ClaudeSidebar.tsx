@@ -1,7 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import { replaceComposerContextReferences } from "@t3tools/shared/composerContextReferences";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
-import type { ScopedThreadRef } from "@t3tools/contracts";
+import type { ContextMenuItem, KeybindingCommand, ScopedThreadRef } from "@t3tools/contracts";
 import {
   ChevronRightIcon,
   MoreHorizontalIcon,
@@ -22,6 +22,7 @@ import {
 } from "react";
 import { useParams, useRouter } from "@tanstack/react-router";
 import { sortSettledThreads } from "@t3tools/client-runtime/state/thread-sort";
+import { canSnooze, effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
 import {
   DndContext,
   DragOverlay,
@@ -92,6 +93,8 @@ import {
   type ClaudeSidebarDot,
   type ClaudeSidebarDropTarget,
 } from "./ClaudeSidebar.logic";
+import { requestCustomSnooze } from "./CustomSnoozeDialog";
+import { resolveSnoozePresets, snoozeWakeDescription } from "./Sidebar.snooze";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 import { SidebarContent, SidebarGroup, useSidebar } from "./ui/sidebar";
@@ -652,6 +655,9 @@ type ThreadMenuAction =
   | "unpin"
   | "settle"
   | "unsettle"
+  | "snooze"
+  | `snooze:${string}`
+  | "unsnooze"
   | "mark-unread"
   | "move:recents"
   | "move:new"
@@ -662,6 +668,31 @@ type ThreadMenuAction =
   | "archive"
   | "delete";
 
+// Menu actions reachable from the keyboard on the open thread. Pin and settle
+// are handled by ChatView; snooze opens its own preset menu.
+const THREAD_ACTION_BY_COMMAND: Partial<Record<KeybindingCommand, ThreadMenuAction>> = {
+  "thread.rename": "rename",
+  "thread.markUnread": "mark-unread",
+  "thread.copyPath": "copy-path",
+  "thread.copyBranch": "copy-branch",
+  "thread.copyId": "copy-thread-id",
+  "thread.archive": "archive",
+  "thread.delete": "delete",
+};
+
+function snoozePresetMenuItems(
+  now: Date,
+  timestampFormat: Parameters<typeof resolveSnoozePresets>[1],
+): ContextMenuItem<ThreadMenuAction>[] {
+  return [
+    ...resolveSnoozePresets(now, timestampFormat).map((preset) => ({
+      id: `snooze:${preset.id}` as const,
+      label: `${preset.label} (${preset.whenLabel})`,
+    })),
+    { id: "snooze:custom", label: "Custom…", separatorBefore: true },
+  ];
+}
+
 export default function ClaudeSidebar() {
   const projects = useProjects();
   const threads = useThreadShells();
@@ -671,11 +702,14 @@ export default function ClaudeSidebar() {
   const serverConfigs = useAtomValue(environmentServerConfigsAtom);
   const confirmThreadDelete = useClientSettings((s) => s.confirmThreadDelete);
   const confirmThreadArchive = useClientSettings((s) => s.confirmThreadArchive);
+  const timestampFormat = useClientSettings((s) => s.timestampFormat);
   const {
     pinThread,
     unpinThread,
     settleThread,
     unsettleThread,
+    snoozeThread,
+    unsnoozeThread,
     confirmAndUnpinThread,
     archiveThread,
     deleteThread,
@@ -703,6 +737,8 @@ export default function ClaudeSidebar() {
   const toggleRecents = useThreadGroupsStore((s) => s.toggleRecents);
   const settledCollapsed = useThreadGroupsStore((s) => s.settledCollapsed);
   const toggleSettled = useThreadGroupsStore((s) => s.toggleSettled);
+  const snoozedCollapsed = useThreadGroupsStore((s) => s.snoozedCollapsed);
+  const toggleSnoozed = useThreadGroupsStore((s) => s.toggleSnoozed);
 
   const [renamingThreadKey, setRenamingThreadKey] = useState<string | null>(null);
   // The row whose actions menu is open keeps its hover look until it closes.
@@ -738,18 +774,53 @@ export default function ClaudeSidebar() {
       serverConfigs.get(thread.environmentId)?.environment.capabilities.threadSettlement === true,
     [serverConfigs],
   );
+  // The clock snooze is judged against. It advances when the soonest snooze
+  // expires (see the timer below), so a thread wakes back into place on time.
+  const [snoozeClock, setSnoozeClock] = useState(() => Date.now());
+  const isThreadSnoozed = useCallback(
+    (thread: SidebarThreadSummary) =>
+      serverConfigs.get(thread.environmentId)?.environment.capabilities.threadSnooze === true &&
+      effectiveSnoozed(thread, { now: new Date(snoozeClock).toISOString() }),
+    [serverConfigs, snoozeClock],
+  );
   const sections = useMemo(() => {
     const partition = partitionClaudeSidebar({
       threads: threads.filter((thread) => !isHiddenSidebarThread(thread)),
       threadKey: threadKeyOf,
       parentKey: parentKeyOf,
       isSettled: isThreadSettled,
+      isSnoozed: isThreadSnoozed,
       groups,
       groupIdByThreadKey,
     });
-    // Most recently settled first, as in the stock Settled shelf.
-    return { ...partition, settled: sortSettledThreads(partition.settled) };
-  }, [groupIdByThreadKey, groups, isThreadSettled, threads]);
+    return {
+      ...partition,
+      // Soonest to wake first.
+      snoozed: partition.snoozed.toSorted(
+        (left, right) => Date.parse(left.snoozedUntil ?? "") - Date.parse(right.snoozedUntil ?? ""),
+      ),
+      // Most recently settled first, as in the stock Settled shelf.
+      settled: sortSettledThreads(partition.settled),
+    };
+  }, [groupIdByThreadKey, groups, isThreadSettled, isThreadSnoozed, threads]);
+  const nextWakeAt = sections.snoozed[0]?.snoozedUntil ?? null;
+  useEffect(() => {
+    const wakeAtMs = nextWakeAt === null ? Number.NaN : Date.parse(nextWakeAt);
+    if (Number.isNaN(wakeAtMs)) return;
+    let id: number | undefined;
+    const arm = () => {
+      const remainingMs = wakeAtMs - Date.now();
+      if (remainingMs <= 0) {
+        setSnoozeClock(Date.now());
+        return;
+      }
+      // setTimeout delays are signed 32-bit: a far-off wake would overflow and
+      // fire at once, so a clamped timer just re-arms until the wake is near.
+      id = window.setTimeout(arm, Math.min(remainingMs + 50, 2_147_483_647));
+    };
+    id = window.setTimeout(arm, 0);
+    return () => window.clearTimeout(id);
+  }, [nextWakeAt]);
   const visibleSettled = sections.settled.slice(0, settledLimit);
   const visibleRecents = sections.recents.slice(0, recentsLimit);
   // Keyboard jump and traversal follow what is on screen, top to bottom.
@@ -765,9 +836,18 @@ export default function ClaudeSidebar() {
         group.collapsed ? [] : withChildren(groupThreads),
       ),
       ...(recentsCollapsed ? [] : withChildren(sections.recents.slice(0, recentsLimit))),
+      ...(snoozedCollapsed ? [] : withChildren(sections.snoozed)),
       ...(settledCollapsed ? [] : withChildren(sections.settled.slice(0, settledLimit))),
     ];
-  }, [pinnedCollapsed, recentsCollapsed, recentsLimit, sections, settledCollapsed, settledLimit]);
+  }, [
+    pinnedCollapsed,
+    recentsCollapsed,
+    recentsLimit,
+    sections,
+    settledCollapsed,
+    settledLimit,
+    snoozedCollapsed,
+  ]);
   const orderedThreadKeys = useMemo(() => orderedThreads.map(threadKeyOf), [orderedThreads]);
   const threadByKey = useMemo(
     () => new Map(threads.map((thread) => [threadKeyOf(thread), thread] as const)),
@@ -865,6 +945,131 @@ export default function ClaudeSidebar() {
   );
   const cancelThreadRename = useCallback(() => setRenamingThreadKey(null), []);
 
+  const workspacePathOf = useCallback(
+    (thread: SidebarThreadSummary) =>
+      thread.worktreePath ??
+      projects.find(
+        (project) =>
+          project.environmentId === thread.environmentId && project.id === thread.projectId,
+      )?.workspaceRoot ??
+      null,
+    [projects],
+  );
+
+  // Runs one thread action, whether picked from the menu or from a shortcut.
+  const runThreadAction = useCallback(
+    async (thread: SidebarThreadSummary, action: ThreadMenuAction) => {
+      const api = readLocalApi();
+      if (!api) return;
+      const threadKey = threadKeyOf(thread);
+      const threadRef: ScopedThreadRef = scopeThreadRef(thread.environmentId, thread.id);
+      if (action.startsWith("snooze:")) {
+        const snoozedUntil =
+          action === "snooze:custom"
+            ? (await requestCustomSnooze())?.snoozedUntil
+            : resolveSnoozePresets(new Date(), timestampFormat).find(
+                (preset) => `snooze:${preset.id}` === action,
+              )?.snoozedUntil;
+        if (snoozedUntil) {
+          toastFailure("Failed to snooze thread", await snoozeThread(threadRef, snoozedUntil));
+        }
+        return;
+      }
+      switch (action) {
+        case "rename":
+          setRenamingThreadKey(threadKey);
+          return;
+        case "pin":
+          toastFailure("Failed to pin thread", await pinThread(threadRef));
+          return;
+        case "unpin":
+          toastFailure("Failed to unpin thread", await confirmAndUnpinThread(threadRef));
+          return;
+        case "settle":
+          toastFailure("Failed to settle thread", await settleThread(threadRef));
+          return;
+        case "unsettle":
+          toastFailure("Failed to un-settle thread", await unsettleThread(threadRef));
+          return;
+        case "unsnooze":
+          toastFailure("Failed to wake thread", await unsnoozeThread(threadRef));
+          return;
+        case "snooze":
+          return;
+        case "mark-unread":
+          markThreadUnread(threadRef);
+          return;
+        case "move:recents":
+          moveThreadToGroup(threadKey, null);
+          return;
+        case "move:new":
+          startNewGroup(threadKey);
+          return;
+        case "copy-path": {
+          const workspacePath = workspacePathOf(thread);
+          if (workspacePath) {
+            copyToClipboard(workspacePath, { label: "Path", value: workspacePath });
+          }
+          return;
+        }
+        case "copy-branch":
+          if (thread.branch) {
+            copyToClipboard(thread.branch, { label: "Branch", value: thread.branch });
+          }
+          return;
+        case "copy-thread-id":
+          copyToClipboard(thread.id, { label: "Thread ID", value: thread.id });
+          return;
+        case "archive": {
+          if (confirmThreadArchive) {
+            const confirmed = await settlePromise(() =>
+              api.dialogs.confirm(`Archive thread "${thread.title}"?`),
+            );
+            if (confirmed._tag === "Failure" || !confirmed.value) return;
+          }
+          toastFailure("Failed to archive thread", await archiveThread(threadRef));
+          return;
+        }
+        case "delete": {
+          if (confirmThreadDelete) {
+            const confirmed = await settlePromise(() =>
+              api.dialogs.confirm(
+                [
+                  `Delete thread "${thread.title}"?`,
+                  "This permanently clears conversation history for this thread.",
+                ].join("\n"),
+                { variant: "destructive" },
+              ),
+            );
+            if (confirmed._tag === "Failure" || !confirmed.value) return;
+          }
+          toastFailure("Failed to delete thread", await deleteThread(threadRef));
+          return;
+        }
+        default:
+          moveThreadToGroup(threadKey, action.slice("move:".length));
+      }
+    },
+    [
+      archiveThread,
+      confirmAndUnpinThread,
+      confirmThreadArchive,
+      confirmThreadDelete,
+      copyToClipboard,
+      deleteThread,
+      markThreadUnread,
+      moveThreadToGroup,
+      pinThread,
+      settleThread,
+      snoozeThread,
+      startNewGroup,
+      timestampFormat,
+      unsettleThread,
+      unsnoozeThread,
+      workspacePathOf,
+    ],
+  );
+
   const handleThreadContextMenu = useCallback(
     (threadKey: string, position: { x: number; y: number }) => {
       void (async () => {
@@ -872,39 +1077,69 @@ export default function ClaudeSidebar() {
         const thread = threadByKeyRef.current.get(threadKey);
         if (!api || !thread) return;
         setMenuThreadKey(threadKey);
-        const threadRef: ScopedThreadRef = scopeThreadRef(thread.environmentId, thread.id);
-        const supportsPinning =
-          serverConfigs.get(thread.environmentId)?.environment.capabilities.threadPinning === true;
-        const supportsSettlement =
-          serverConfigs.get(thread.environmentId)?.environment.capabilities.threadSettlement ===
-          true;
+        const capabilities = serverConfigs.get(thread.environmentId)?.environment.capabilities;
         const isPinned = thread.pinnedAt != null;
         const isSettled = isThreadSettled(thread);
+        const isSnoozed = isThreadSnoozed(thread);
+        const now = new Date();
         const currentGroupId = useThreadGroupsStore.getState().groupIdByThreadKey[threadKey];
-        const workspacePath =
-          thread.worktreePath ??
-          projects.find(
-            (project) =>
-              project.environmentId === thread.environmentId && project.id === thread.projectId,
-          )?.workspaceRoot ??
-          null;
+        const workspacePath = workspacePathOf(thread);
+        // Shortcuts act on the open thread, as in Claude desktop's menu.
+        const keys = (command: KeybindingCommand) => {
+          const label = shortcutLabelForCommand(keybindings, command);
+          return label ? { shortcut: label } : {};
+        };
         const clicked = await settlePromise(() =>
           api.contextMenu.show<ThreadMenuAction>(
             [
-              { id: "rename", label: "Rename" },
-              ...(supportsPinning
-                ? [{ id: isPinned ? "unpin" : "pin", label: isPinned ? "Unpin" : "Pin" } as const]
+              { id: "rename", label: "Rename", ...keys("thread.rename") },
+              ...(capabilities?.threadPinning === true
+                ? [
+                    {
+                      id: isPinned ? "unpin" : "pin",
+                      label: isPinned ? "Unpin" : "Pin",
+                      ...keys("thread.pin"),
+                    } as const,
+                  ]
                 : []),
-              ...(supportsSettlement
+              ...(capabilities?.threadSettlement === true
                 ? [
                     {
                       id: isSettled ? "unsettle" : "settle",
                       label: isSettled ? "Un-settle" : "Settle",
+                      ...keys("thread.settle"),
                     } as const,
                   ]
                 : []),
+              ...(capabilities?.threadSnooze === true
+                ? [
+                    isSnoozed && thread.snoozedUntil
+                      ? ({
+                          id: "unsnooze",
+                          label: `Wake (snoozed until ${snoozeWakeDescription(
+                            thread.snoozedUntil,
+                            now,
+                            timestampFormat,
+                          )})`,
+                          ...keys("thread.snooze"),
+                        } as const)
+                      : ({
+                          id: "snooze",
+                          label: "Snooze",
+                          disabled: !canSnooze(thread, { now: now.toISOString() }),
+                          ...keys("thread.snooze"),
+                          children: snoozePresetMenuItems(now, timestampFormat),
+                        } as const),
+                  ]
+                : []),
               ...(thread.latestRun?.completedAt
-                ? [{ id: "mark-unread", label: "Mark as unread" } as const]
+                ? [
+                    {
+                      id: "mark-unread",
+                      label: "Mark as unread",
+                      ...keys("thread.markUnread"),
+                    } as const,
+                  ]
                 : []),
               {
                 id: "move:recents",
@@ -927,104 +1162,86 @@ export default function ClaudeSidebar() {
                 label: "Copy path",
                 separatorBefore: true,
                 disabled: !workspacePath,
+                ...keys("thread.copyPath"),
               },
-              ...(thread.branch ? [{ id: "copy-branch", label: "Copy branch name" } as const] : []),
-              { id: "copy-thread-id", label: "Copy thread ID" },
-              { id: "archive", label: "Archive", separatorBefore: true },
-              { id: "delete", label: "Delete", destructive: true },
+              ...(thread.branch
+                ? [
+                    {
+                      id: "copy-branch",
+                      label: "Copy branch name",
+                      ...keys("thread.copyBranch"),
+                    } as const,
+                  ]
+                : []),
+              { id: "copy-thread-id", label: "Copy thread ID", ...keys("thread.copyId") },
+              { id: "archive", label: "Archive", separatorBefore: true, ...keys("thread.archive") },
+              { id: "delete", label: "Delete", destructive: true, ...keys("thread.delete") },
             ],
             position,
           ),
         );
         setMenuThreadKey(null);
         if (clicked._tag === "Failure" || !clicked.value) return;
-        const action = clicked.value;
-        switch (action) {
-          case "rename":
-            setRenamingThreadKey(threadKey);
-            return;
-          case "pin":
-            toastFailure("Failed to pin thread", await pinThread(threadRef));
-            return;
-          case "unpin":
-            toastFailure("Failed to unpin thread", await confirmAndUnpinThread(threadRef));
-            return;
-          case "settle":
-            toastFailure("Failed to settle thread", await settleThread(threadRef));
-            return;
-          case "unsettle":
-            toastFailure("Failed to un-settle thread", await unsettleThread(threadRef));
-            return;
-          case "mark-unread":
-            markThreadUnread(threadRef);
-            return;
-          case "move:recents":
-            moveThreadToGroup(threadKey, null);
-            return;
-          case "move:new":
-            startNewGroup(threadKey);
-            return;
-          case "copy-path":
-            if (workspacePath)
-              copyToClipboard(workspacePath, { label: "Path", value: workspacePath });
-            return;
-          case "copy-branch":
-            if (thread.branch) {
-              copyToClipboard(thread.branch, { label: "Branch", value: thread.branch });
-            }
-            return;
-          case "copy-thread-id":
-            copyToClipboard(thread.id, { label: "Thread ID", value: thread.id });
-            return;
-          case "archive": {
-            if (confirmThreadArchive) {
-              const confirmed = await settlePromise(() =>
-                api.dialogs.confirm(`Archive thread "${thread.title}"?`),
-              );
-              if (confirmed._tag === "Failure" || !confirmed.value) return;
-            }
-            toastFailure("Failed to archive thread", await archiveThread(threadRef));
-            return;
-          }
-          case "delete": {
-            if (confirmThreadDelete) {
-              const confirmed = await settlePromise(() =>
-                api.dialogs.confirm(
-                  [
-                    `Delete thread "${thread.title}"?`,
-                    "This permanently clears conversation history for this thread.",
-                  ].join("\n"),
-                  { variant: "destructive" },
-                ),
-              );
-              if (confirmed._tag === "Failure" || !confirmed.value) return;
-            }
-            toastFailure("Failed to delete thread", await deleteThread(threadRef));
-            return;
-          }
-          default:
-            moveThreadToGroup(threadKey, action.slice("move:".length));
-        }
+        await runThreadAction(thread, clicked.value);
       })();
     },
     [
-      archiveThread,
-      confirmAndUnpinThread,
-      confirmThreadArchive,
-      confirmThreadDelete,
-      copyToClipboard,
-      deleteThread,
       groups,
-      markThreadUnread,
-      moveThreadToGroup,
-      pinThread,
-      projects,
-      serverConfigs,
       isThreadSettled,
-      settleThread,
-      startNewGroup,
-      unsettleThread,
+      isThreadSnoozed,
+      keybindings,
+      runThreadAction,
+      serverConfigs,
+      timestampFormat,
+      workspacePathOf,
     ],
+  );
+
+  // The snooze shortcut: wakes a snoozed thread, otherwise offers the presets
+  // beside its row (or mid-window when the sidebar hides it).
+  const snoozeFromShortcut = useCallback(
+    (thread: SidebarThreadSummary) => {
+      void (async () => {
+        const api = readLocalApi();
+        if (!api) return;
+        if (
+          serverConfigs.get(thread.environmentId)?.environment.capabilities.threadSnooze !== true
+        ) {
+          return;
+        }
+        if (isThreadSnoozed(thread)) {
+          await runThreadAction(thread, "unsnooze");
+          return;
+        }
+        const now = new Date();
+        if (!canSnooze(thread, { now: now.toISOString() })) {
+          toastManager.add({
+            type: "warning",
+            title: "Can't snooze a thread that is waiting on you",
+          });
+          return;
+        }
+        const threadKey = threadKeyOf(thread);
+        const rect = document
+          .querySelector(`[data-thread-key="${CSS.escape(threadKey)}"]`)
+          ?.getBoundingClientRect();
+        const position =
+          rect && rect.width > 0
+            ? { x: rect.right, y: rect.top }
+            : { x: window.innerWidth / 2, y: window.innerHeight / 3 };
+        setMenuThreadKey(threadKey);
+        const clicked = await settlePromise(() =>
+          api.contextMenu.show<ThreadMenuAction>(
+            snoozePresetMenuItems(now, timestampFormat),
+            position,
+          ),
+        );
+        setMenuThreadKey(null);
+        if (clicked._tag === "Failure" || !clicked.value) return;
+        await runThreadAction(thread, clicked.value);
+      })();
+    },
+    [isThreadSnoozed, runThreadAction, serverConfigs, timestampFormat],
   );
 
   const handleGroupMenu = useCallback(
@@ -1105,11 +1322,36 @@ export default function ClaudeSidebar() {
         return;
       }
       const jumpIndex = threadJumpIndexFromCommand(command ?? "");
-      if (jumpIndex !== null) go(orderedThreadKeys[jumpIndex] ?? null);
+      if (jumpIndex !== null) {
+        go(orderedThreadKeys[jumpIndex] ?? null);
+        return;
+      }
+      // Thread menu shortcuts act on the open thread.
+      const routeThread = routeThreadKey ? threadByKeyRef.current.get(routeThreadKey) : undefined;
+      if (!routeThread || command === null) return;
+      if (command === "thread.snooze") {
+        event.preventDefault();
+        event.stopPropagation();
+        snoozeFromShortcut(routeThread);
+        return;
+      }
+      const action = THREAD_ACTION_BY_COMMAND[command];
+      if (!action) return;
+      event.preventDefault();
+      event.stopPropagation();
+      void runThreadAction(routeThread, action);
     };
     window.addEventListener("keydown", onWindowKeyDown);
     return () => window.removeEventListener("keydown", onWindowKeyDown);
-  }, [keybindings, navigateToThread, orderedThreadKeys, routeTerminalOpen, routeThreadKey]);
+  }, [
+    keybindings,
+    navigateToThread,
+    orderedThreadKeys,
+    routeTerminalOpen,
+    routeThreadKey,
+    runThreadAction,
+    snoozeFromShortcut,
+  ]);
 
   const shortcutModifiers = useShortcutModifierState();
   const terminalFocused = useTerminalFocus();
@@ -1166,6 +1408,7 @@ export default function ClaudeSidebar() {
       const plan = planClaudeSidebarDrop({
         isPinned: thread.pinnedAt != null,
         isSettled: isThreadSettled(thread),
+        isSnoozed: isThreadSnoozed(thread),
         currentGroupId: useThreadGroupsStore.getState().groupIdByThreadKey[threadKey] ?? null,
         target,
       });
@@ -1182,6 +1425,9 @@ export default function ClaudeSidebar() {
       }
       moveThreadToGroup(threadKey, plan.groupId);
       void (async () => {
+        if (plan.unsnooze) {
+          toastFailure("Failed to wake thread", await unsnoozeThread(threadRef));
+        }
         if (plan.unsettle) {
           toastFailure("Failed to un-settle thread", await unsettleThread(threadRef));
         }
@@ -1192,12 +1438,14 @@ export default function ClaudeSidebar() {
     },
     [
       isThreadSettled,
+      isThreadSnoozed,
       moveThreadToGroup,
       pinThread,
       serverConfigs,
       settleThread,
       unpinThread,
       unsettleThread,
+      unsnoozeThread,
     ],
   );
   const dragActive = draggingThreadKey !== null;
@@ -1381,6 +1629,20 @@ export default function ClaudeSidebar() {
                   </ul>
                 </Collapse>
               </DropSection>
+
+              {sections.snoozed.length > 0 ? (
+                // Not a drop target: a snooze needs a wake time.
+                <section aria-label="Snoozed" className="pb-0.5">
+                  <SectionHeader
+                    label={`Snoozed (${sections.snoozed.length})`}
+                    collapsed={snoozedCollapsed}
+                    onToggle={toggleSnoozed}
+                  />
+                  <Collapse open={!snoozedCollapsed}>
+                    <ul className="flex flex-col gap-px">{renderRows(sections.snoozed)}</ul>
+                  </Collapse>
+                </section>
+              ) : null}
 
               {sections.settled.length > 0 || dragActive ? (
                 <DropSection target={{ kind: "settled" }} label="Settled" dragActive={dragActive}>

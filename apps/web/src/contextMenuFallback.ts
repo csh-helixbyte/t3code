@@ -382,6 +382,15 @@ export function showContextMenuFallback<T extends string>(
         label.textContent = item.label;
         button.appendChild(label);
 
+        if (typeof item.shortcut === "string" && item.shortcut.length > 0) {
+          const shortcut = document.createElement("span");
+          shortcut.className = "ms-auto shrink-0 ps-4 text-muted-foreground text-xs";
+          shortcut.style.cssText =
+            "margin-inline-start:auto;flex-shrink:0;padding-inline-start:1rem;color:var(--contrast-muted-foreground);font-size:0.75rem;";
+          shortcut.textContent = item.shortcut;
+          button.appendChild(shortcut);
+        }
+
         if (hasChildren) {
           button.setAttribute("aria-haspopup", "menu");
           button.setAttribute("aria-expanded", "false");

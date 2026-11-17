@@ -127,6 +127,27 @@ describe("partitionClaudeSidebar", () => {
     expect(sections.recents.map((t) => t.id)).toEqual(["open"]);
   });
 
+  it("shelves snoozed threads below settled, keeping their pin underneath", () => {
+    const sections = partitionClaudeSidebar({
+      threads: [
+        thread("snoozed-pin", "2026-01-02T00:00:00.000Z", {
+          pinnedAt: "2026-01-01T00:00:00.000Z",
+        }),
+        thread("snoozed-settled", "2026-01-02T00:00:00.000Z"),
+        thread("grouped", "2026-01-01T00:00:00.000Z"),
+      ],
+      threadKey: (t) => t.id,
+      isSettled: (t) => t.id === "snoozed-settled",
+      isSnoozed: (t) => t.id !== "grouped",
+      groups,
+      groupIdByThreadKey: { "snoozed-pin": "g1", grouped: "g1" },
+    });
+    expect(sections.pinned).toEqual([]);
+    expect(sections.snoozed.map((t) => t.id)).toEqual(["snoozed-pin"]);
+    expect(sections.settled.map((t) => t.id)).toEqual(["snoozed-settled"]);
+    expect(sections.groups[0]!.threads.map((t) => t.id)).toEqual(["grouped"]);
+  });
+
   it("nests forks under their top-most visible ancestor and keeps them with it", () => {
     const parentOf: Record<string, string> = { child: "root", grandchild: "child", lost: "gone" };
     const sections = partitionClaudeSidebar({
@@ -148,8 +169,13 @@ describe("partitionClaudeSidebar", () => {
 });
 
 describe("planClaudeSidebarDrop", () => {
-  const base = { isPinned: false, isSettled: false, currentGroupId: null as string | null };
-  const none = { pin: false, unpin: false, settle: false, unsettle: false };
+  const base = {
+    isPinned: false,
+    isSettled: false,
+    isSnoozed: false,
+    currentGroupId: null as string | null,
+  };
+  const none = { pin: false, unpin: false, settle: false, unsettle: false, unsnooze: false };
 
   it("pins on Pinned, unpins and regroups elsewhere, and ignores no-op drops", () => {
     expect(
@@ -182,6 +208,26 @@ describe("planClaudeSidebarDrop", () => {
         target: { kind: "pinned" },
       }),
     ).toEqual({ ...none, unsettle: true, groupId: null });
+  });
+
+  it("wakes a snoozed thread dragged anywhere but Settled", () => {
+    const snoozed = { ...base, isSnoozed: true, isPinned: true, currentGroupId: "g1" };
+    expect(planClaudeSidebarDrop({ ...snoozed, target: { kind: "pinned" } })).toEqual({
+      ...none,
+      unsnooze: true,
+      groupId: "g1",
+    });
+    expect(planClaudeSidebarDrop({ ...snoozed, target: { kind: "recents" } })).toEqual({
+      ...none,
+      unpin: true,
+      unsnooze: true,
+      groupId: null,
+    });
+    expect(planClaudeSidebarDrop({ ...snoozed, target: { kind: "settled" } })).toEqual({
+      ...none,
+      settle: true,
+      groupId: null,
+    });
   });
 });
 

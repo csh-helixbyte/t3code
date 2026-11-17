@@ -20,6 +20,7 @@ interface ThreadGroupsState {
   groupIdByThreadKey: Record<string, string>;
   pinnedCollapsed: boolean;
   recentsCollapsed: boolean;
+  snoozedCollapsed: boolean;
   settledCollapsed: boolean;
 }
 
@@ -31,6 +32,7 @@ interface ThreadGroupsStore extends ThreadGroupsState {
   moveThreadToGroup: (threadKey: string, groupId: string | null) => void;
   togglePinned: () => void;
   toggleRecents: () => void;
+  toggleSnoozed: () => void;
   toggleSettled: () => void;
 }
 
@@ -41,6 +43,7 @@ export const useThreadGroupsStore = create<ThreadGroupsStore>()(
       groupIdByThreadKey: {},
       pinnedCollapsed: false,
       recentsCollapsed: false,
+      snoozedCollapsed: false,
       settledCollapsed: true,
       createGroup: (name) => {
         // Local ids only need to be unique within this browser's list.
@@ -75,6 +78,7 @@ export const useThreadGroupsStore = create<ThreadGroupsStore>()(
         }),
       togglePinned: () => set((state) => ({ pinnedCollapsed: !state.pinnedCollapsed })),
       toggleRecents: () => set((state) => ({ recentsCollapsed: !state.recentsCollapsed })),
+      toggleSnoozed: () => set((state) => ({ snoozedCollapsed: !state.snoozedCollapsed })),
       toggleSettled: () => set((state) => ({ settledCollapsed: !state.settledCollapsed })),
     }),
     {
@@ -88,6 +92,7 @@ export const useThreadGroupsStore = create<ThreadGroupsStore>()(
         groupIdByThreadKey: state.groupIdByThreadKey,
         pinnedCollapsed: state.pinnedCollapsed,
         recentsCollapsed: state.recentsCollapsed,
+        snoozedCollapsed: state.snoozedCollapsed,
         settledCollapsed: state.settledCollapsed,
       }),
     },

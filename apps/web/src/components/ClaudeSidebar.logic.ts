@@ -86,6 +86,8 @@ export interface ClaudeSidebarSections<T> {
   readonly pinned: T[];
   readonly groups: { readonly group: ThreadGroup; readonly threads: T[] }[];
   readonly recents: T[];
+  /** Snoozed threads, out of the way until they wake. Keep their pin and group. */
+  readonly snoozed: T[];
   /** Settled threads, hidden behind the collapsed Settled section. */
   readonly settled: T[];
   /** Top-level thread key → the threads nested under it, newest first. */
@@ -93,9 +95,9 @@ export interface ClaudeSidebarSections<T> {
 }
 
 /**
- * Splits threads into Pinned, the user's groups, Recents and Settled.
- * Settled wins over everything (as in the stock sidebar), then Pinned, then a
- * group; a thread assigned to a group that no longer exists falls
+ * Splits threads into Pinned, the user's groups, Recents, Snoozed and
+ * Settled. Settled wins over everything (as in the stock sidebar), then
+ * Snoozed, then Pinned, then a group; a thread assigned to a group that no longer exists falls
  * back to Recents. A thread with a visible parent (`parentKey`) nests one
  * level deep under its top-most visible ancestor and follows it between
  * sections. Every list is most recent activity first.
@@ -110,6 +112,7 @@ export function partitionClaudeSidebar<
   threadKey: (thread: T) => string;
   parentKey?: (thread: T) => string | null;
   isSettled?: (thread: T) => boolean;
+  isSnoozed?: (thread: T) => boolean;
   groups: readonly ThreadGroup[];
   groupIdByThreadKey: Readonly<Record<string, string>>;
 }): ClaudeSidebarSections<T> {
@@ -141,10 +144,15 @@ export function partitionClaudeSidebar<
   const groupThreads = new Map(input.groups.map((group) => [group.id, [] as T[]]));
   const pinned: T[] = [];
   const recents: T[] = [];
+  const snoozed: T[] = [];
   const settled: T[] = [];
   for (const thread of topLevel) {
     if (input.isSettled?.(thread)) {
       settled.push(thread);
+      continue;
+    }
+    if (input.isSnoozed?.(thread)) {
+      snoozed.push(thread);
       continue;
     }
     if (thread.pinnedAt != null) {
@@ -159,6 +167,7 @@ export function partitionClaudeSidebar<
     pinned,
     groups: input.groups.map((group) => ({ group, threads: groupThreads.get(group.id)! })),
     recents,
+    snoozed,
     settled,
     childrenByKey,
   };
@@ -182,12 +191,45 @@ export function parseClaudeSidebarDropId(id: string): ClaudeSidebarDropTarget | 
 }
 
 /**
- * What a drop changes. Pinning and settling are server state, grouping is
- * local, and a thread sits in exactly one section: dropping on Settled
- * settles it, dropping anywhere else un-settles it, leaving Pinned unpins it,
- * and entering Pinned, Recents or Settled clears its group.
+ * What a drop changes. Pinning, settling and snoozing are server state,
+ * grouping is local, and a thread sits in exactly one section: dropping on
+ * Settled settles it, dropping anywhere else un-settles it, leaving Pinned
+ * unpins it, and entering Pinned, Recents or Settled clears its group.
+ * Snoozed is not a drop target (a snooze needs a wake time); dragging a
+ * snoozed thread anywhere but Settled wakes it, since settling clears the
+ * snooze on its own.
  */
 export function planClaudeSidebarDrop(input: {
+  isPinned: boolean;
+  isSettled: boolean;
+  isSnoozed: boolean;
+  currentGroupId: string | null;
+  target: ClaudeSidebarDropTarget;
+}): {
+  pin: boolean;
+  unpin: boolean;
+  settle: boolean;
+  unsettle: boolean;
+  unsnooze: boolean;
+  groupId: string | null;
+} | null {
+  const plan = planSectionDrop(input);
+  const unsnooze = input.isSnoozed && input.target.kind !== "settled";
+  if (plan) return { ...plan, unsnooze };
+  // Dropping a snoozed thread back on its own section still wakes it.
+  return unsnooze
+    ? {
+        pin: false,
+        unpin: false,
+        settle: false,
+        unsettle: false,
+        unsnooze,
+        groupId: input.currentGroupId,
+      }
+    : null;
+}
+
+function planSectionDrop(input: {
   isPinned: boolean;
   isSettled: boolean;
   currentGroupId: string | null;
