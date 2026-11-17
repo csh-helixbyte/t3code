@@ -347,7 +347,13 @@ function isActivityEntry(entry: TimelineEntry): entry is ActivityEntry {
         entry.entry.tone !== "error";
 }
 
-export type MessagesTimelineRow =
+/**
+ * A turn's steps (updates, thinking, tool calls) hang off one rail in the
+ * timeline. Each step says whether its line joins the step above, below, or both.
+ */
+export type TimelineRail = "up" | "down" | "both";
+
+export type MessagesTimelineRow = (
   | {
       kind: "activity-group";
       id: string;
@@ -412,6 +418,11 @@ export type MessagesTimelineRow =
       message: ChatMessage;
       durationStart: string;
       showAssistantMeta: boolean;
+      /**
+       * An assistant message written on the way to the answer. It renders as a
+       * step on the work rail; only the reply renders as full message text.
+       */
+      assistantUpdate: boolean;
       showAssistantCopyButton: boolean;
       assistantCopyStreaming: boolean;
       assistantTurnDiffSummary?: TurnDiffSummary | undefined;
@@ -460,7 +471,8 @@ export type MessagesTimelineRow =
       queuedMessage: QueuedComposerMessage;
       /** Oldest queued message, the one the next boundary sends. */
       isNext: boolean;
-    };
+    }
+) & { rail?: TimelineRail };
 
 export interface StableMessagesTimelineRowsState {
   byId: Map<string, MessagesTimelineRow>;
@@ -920,6 +932,45 @@ function attachTrailingToolGroupsToAssistant(
   return result;
 }
 
+function rowIsRailStep(row: MessagesTimelineRow): boolean {
+  switch (row.kind) {
+    case "activity-group":
+    case "work-toggle":
+    case "thinking":
+      return true;
+    case "work-live":
+      return row.entry.agentSpawn === undefined;
+    // Expanded tool lists carry their own icons in the rail's column.
+    case "work":
+      return !row.isExpandedToolGroup && row.groupedEntries.every((entry) => !entry.agentSpawn);
+    case "message":
+      return row.message.role === "reasoning" || row.assistantUpdate;
+    default:
+      return false;
+  }
+}
+
+/** An open group shows its details under its own row, so the rail stops there. */
+function railContinuesBelow(row: MessagesTimelineRow): boolean {
+  return !(
+    (row.kind === "activity-group" || row.kind === "work-live" || row.kind === "work-toggle") &&
+    row.expanded
+  );
+}
+
+/** Join consecutive steps of a turn with a rail, leaving lone steps without one. */
+function attachWorkRail(rows: ReadonlyArray<MessagesTimelineRow>): MessagesTimelineRow[] {
+  return rows.map((row, index) => {
+    if (!rowIsRailStep(row)) return row;
+    const previous = rows[index - 1];
+    const next = rows[index + 1];
+    const up = previous !== undefined && rowIsRailStep(previous) && railContinuesBelow(previous);
+    const down = next !== undefined && rowIsRailStep(next) && railContinuesBelow(row);
+    if (!up && !down) return row;
+    return { ...row, rail: up && down ? "both" : up ? "up" : "down" };
+  });
+}
+
 /** Match each user message to the next assistant checkpoint. */
 function buildRevertTurnCountByUserMessageId(input: {
   supportsConversationRollback: boolean;
@@ -995,6 +1046,10 @@ export function deriveMessagesTimelineRows(input: {
     input.timelineEntries.flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
   );
   const terminalAssistantMessageIds = deriveTerminalAssistantMessageIds(input.timelineEntries);
+  const turnIdsWithWork = new Set<TurnId>();
+  for (const entry of input.timelineEntries) {
+    if (entry.kind === "work" && entry.entry.turnId) turnIdsWithWork.add(entry.entry.turnId);
+  }
   const unsettledTurnId = deriveUnsettledTurnId(
     input.latestTurn ?? null,
     input.runningTurnId ?? null,
@@ -1390,6 +1445,14 @@ export function deriveMessagesTimelineRows(input: {
       timelineEntry.message.role === "assistant" &&
       terminalAssistantMessageIds.has(timelineEntry.message.id) &&
       !assistantResponseStillInProgress;
+    // Text the agent writes between tool calls is an update. While a turn that
+    // uses tools is still running, even its latest text counts: whether it
+    // turns out to be the reply is only known once the turn settles.
+    const assistantUpdate =
+      timelineEntry.message.role === "assistant" &&
+      (!terminalAssistantMessageIds.has(timelineEntry.message.id) ||
+        (assistantResponseStillInProgress &&
+          turnIdsWithWork.has(timelineEntry.message.turnId as TurnId)));
 
     nextRows.push({
       kind: "message",
@@ -1398,6 +1461,7 @@ export function deriveMessagesTimelineRows(input: {
       message: timelineEntry.message,
       durationStart,
       showAssistantMeta,
+      assistantUpdate,
       showAssistantCopyButton: showAssistantMeta,
       assistantCopyStreaming: timelineEntry.message.streaming || assistantResponseStillInProgress,
       assistantTurnDiffSummary:
@@ -1473,7 +1537,7 @@ export function deriveMessagesTimelineRows(input: {
       createdAt: input.activeTurnStartedAt,
     });
   }
-  const rows = attachTrailingToolGroupsToAssistant(nextRows);
+  const rows = attachWorkRail(attachTrailingToolGroupsToAssistant(nextRows));
   input.queuedMessages?.forEach((queuedMessage, index) => {
     rows.push({
       kind: "queued-message",
@@ -1596,7 +1660,7 @@ export function computeStableMessagesTimelineRows(
 
 /** Shallow field comparison per row variant — avoids deep equality cost. */
 function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean {
-  if (a.kind !== b.kind || a.id !== b.id) return false;
+  if (a.kind !== b.kind || a.id !== b.id || a.rail !== b.rail) return false;
 
   switch (a.kind) {
     case "activity-group": {
@@ -1686,6 +1750,7 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.message === bm.message &&
         a.durationStart === bm.durationStart &&
         a.showAssistantMeta === bm.showAssistantMeta &&
+        a.assistantUpdate === bm.assistantUpdate &&
         a.showAssistantCopyButton === bm.showAssistantCopyButton &&
         a.assistantCopyStreaming === bm.assistantCopyStreaming &&
         a.assistantTurnDiffSummary === bm.assistantTurnDiffSummary &&

@@ -201,6 +201,7 @@ import {
   worktreeSetupAgentStarted,
   type StableMessagesTimelineRowsState,
   type MessagesTimelineRow,
+  type TimelineRail,
   TIMELINE_MINIMAP_MIN_ITEMS,
   type TimelineLatestTurn,
   type WorkGroupScrollAnchor,
@@ -1712,6 +1713,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
           row.kind === "assistant-meta"
           ? "group/assistant"
           : null,
+        row.rail && "relative",
       )}
       data-timeline-row-id={row.id}
       data-timeline-row-kind={row.kind}
@@ -1720,6 +1722,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       }
       data-message-role={row.kind === "message" ? row.message.role : undefined}
     >
+      {row.rail ? <WorkRailSegments rail={row.rail} /> : null}
       {row.kind === "work" ? (
         <WorkGroupSection
           anchorKey={row.id}
@@ -1735,7 +1738,11 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       {row.kind === "context-compaction" ? <ContextCompactionTimelineRow row={row} /> : null}
       {row.kind === "message" && row.message.role === "user" ? <UserTimelineRow row={row} /> : null}
       {row.kind === "message" && row.message.role === "assistant" ? (
-        <AssistantTimelineRow row={row} />
+        row.assistantUpdate ? (
+          <AssistantUpdateTimelineRow row={row} />
+        ) : (
+          <AssistantTimelineRow row={row} />
+        )
       ) : null}
       {row.kind === "message" && row.message.role === "reasoning" ? (
         <ReasoningTimelineRow row={row} />
@@ -2374,6 +2381,57 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
         timestampFormat={ctx.timestampFormat}
         className="ms-auto"
       />
+    </div>
+  );
+}
+
+// Step icons sit in a 24px column 2px in from the row edge, so the rail runs
+// down its centre and breaks around each icon.
+function WorkRailSegments({ rail }: { rail: TimelineRail }) {
+  const segment = "pointer-events-none absolute start-[13.5px] w-px bg-border";
+  return (
+    <>
+      {rail !== "down" ? <span aria-hidden className={cn(segment, "top-0 h-1")} /> : null}
+      {rail !== "up" ? <span aria-hidden className={cn(segment, "top-6.5 bottom-0")} /> : null}
+    </>
+  );
+}
+
+/** Text the agent writes on the way to its answer, shown as a step on the work rail. */
+function AssistantUpdateTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
+  const ctx = use(TimelineRowCtx);
+  if (row.message.text.trim().length === 0) {
+    return null;
+  }
+  return (
+    <div className="flex min-w-0 gap-1.5 px-0.5 py-0.5">
+      <MessageAuthorHeading>T3 Code</MessageAuthorHeading>
+      <span aria-hidden className="flex size-6 shrink-0 items-center justify-center">
+        <span className="size-2.5 rounded-full border border-icon-muted" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <AssistantCitationSource
+          messageId={row.message.id}
+          {...(ctx.threadRef ? { threadRef: ctx.threadRef } : {})}
+          itemKey={row.id}
+          request={ctx.citationRequest}
+          listRef={ctx.listRef}
+        >
+          <ChatMarkdown
+            className="pt-0.5 text-secondary-label"
+            text={row.message.text}
+            cwd={ctx.markdownCwd}
+            threadRef={ctx.threadRef ?? undefined}
+            isStreaming={Boolean(row.message.streaming)}
+            lineBreaks={shouldPreserveAssistantLineBreaks(row.message.text)}
+            skills={ctx.skills}
+            headingLevelOffset={MESSAGE_HEADING_LEVEL}
+            onUseArtifactTemplate={ctx.onUseArtifactTemplate}
+            onRunShellCommand={ctx.onRunShellCommand}
+            onImageExpand={ctx.onImageExpand}
+          />
+        </AssistantCitationSource>
+      </div>
     </div>
   );
 }

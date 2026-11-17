@@ -3247,6 +3247,7 @@ describe("deriveMessagesTimelineRows", () => {
     );
 
     expect(assistantRows.map((row) => row.showAssistantMeta)).toEqual([false, true]);
+    expect(assistantRows.map((row) => row.assistantUpdate)).toEqual([true, false]);
   });
 
   it("withholds assistant metadata while the active turn is still in progress", () => {
@@ -3287,6 +3288,115 @@ describe("deriveMessagesTimelineRows", () => {
     expect(assistantRow?.showAssistantMeta).toBe(false);
     expect(assistantRow?.showAssistantCopyButton).toBe(false);
     expect(rows.at(-1)).toMatchObject({ kind: "thinking" });
+  });
+
+  it("puts a tool-using turn's text on the work rail until the turn settles", () => {
+    const message = (id: string, at: string) => ({
+      id: `${id}-entry`,
+      kind: "message" as const,
+      createdAt: at,
+      message: {
+        id: id as never,
+        role: "assistant" as const,
+        text: `${id} text`,
+        turnId: "turn-1" as never,
+        createdAt: at,
+        updatedAt: at,
+        streaming: false,
+      },
+    });
+    const input = {
+      timelineEntries: [
+        message("update", "2026-01-01T00:00:10Z"),
+        {
+          id: "work-entry",
+          kind: "work" as const,
+          createdAt: "2026-01-01T00:00:12Z",
+          entry: {
+            id: "work",
+            createdAt: "2026-01-01T00:00:12Z",
+            turnId: "turn-1" as never,
+            label: "Ran command",
+            tone: "tool" as const,
+            itemType: "command_execution" as const,
+            toolLifecycleStatus: "completed" as const,
+          },
+        },
+        message("latest", "2026-01-01T00:00:20Z"),
+      ],
+      latestTurn: {
+        turnId: "turn-1" as never,
+        state: "running" as const,
+        startedAt: "2026-01-01T00:00:00Z",
+        completedAt: null,
+      },
+      runningTurnId: "turn-1" as never,
+      isWorking: true,
+      activeTurnStartedAt: "2026-01-01T00:00:00Z",
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    };
+    const running = deriveMessagesTimelineRows(input);
+    const runningSteps = running.flatMap((row) =>
+      row.id === "update-entry" || row.id === "work-entry" || row.id === "latest-entry"
+        ? [{ id: row.id, rail: row.rail, update: row.kind === "message" && row.assistantUpdate }]
+        : [],
+    );
+    expect(runningSteps).toEqual([
+      { id: "update-entry", rail: "down", update: true },
+      { id: "work-entry", rail: "both", update: false },
+      { id: "latest-entry", rail: "both", update: true },
+    ]);
+    expect(running.at(-1)).toMatchObject({ kind: "thinking", rail: "up" });
+
+    const settled = deriveMessagesTimelineRows({
+      ...input,
+      latestTurn: { ...input.latestTurn, state: "completed", completedAt: "2026-01-01T00:00:30Z" },
+      runningTurnId: null,
+      isWorking: false,
+      expandedTurnIds: new Set(["turn-1" as never]),
+    });
+    expect(settled.find((row) => row.id === "latest-entry")).toMatchObject({
+      assistantUpdate: false,
+      showAssistantMeta: true,
+    });
+    expect(settled.find((row) => row.id === "latest-entry")?.rail).toBeUndefined();
+    expect(settled.find((row) => row.id === "work-entry")?.rail).toBe("up");
+  });
+
+  it("keeps a turn without tools as a plain reply while it streams", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "answer-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:10Z",
+          message: {
+            id: "answer" as never,
+            role: "assistant",
+            text: "Here is the answer",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:10Z",
+            updatedAt: "2026-01-01T00:00:11Z",
+            streaming: true,
+          },
+        },
+      ],
+      latestTurn: {
+        turnId: "turn-1" as never,
+        state: "running",
+        startedAt: "2026-01-01T00:00:00Z",
+        completedAt: null,
+      },
+      runningTurnId: "turn-1" as never,
+      isWorking: true,
+      activeTurnStartedAt: "2026-01-01T00:00:00Z",
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+    expect(rows.find((row) => row.id === "answer-entry")).toMatchObject({
+      assistantUpdate: false,
+    });
   });
 
   it.each([
